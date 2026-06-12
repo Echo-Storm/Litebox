@@ -186,14 +186,21 @@ internal static class HostLaunch
 
             var addApps = SafeAddApps(game);
 
-            // AutoRunBefore additional apps (scripts, mounts, …).
-            foreach (var a in addApps.Where(a => a.AutoRunBefore))
-                RunProcess(a.ApplicationPath, a.CommandLine, emulator, game, a.UseEmulator, $"autorun-before \"{a.Name}\"");
-
             // Main target: built-in DOSBox, an explicit additional-app, or the game.
             bool useDos = SafeBool(() => app != null ? app.UseDosBox : game.UseDosBox);
             string target = !string.IsNullOrEmpty(SafeStr(() => app?.ApplicationPath))
                 ? app.ApplicationPath : SafeStr(() => game.ApplicationPath);
+
+            // Dependency pre-check (integration plugin's required bios files) —
+            // BEFORE any side effect (autoruns included), like LB's dialog. The
+            // user may cancel the launch.
+            if (!DryRun && !useDos && emulator != null
+                && !DependencyCheck.PreLaunchCheck(emulator, game))
+                return;   // finally still runs (play-time, idle state, reload)
+
+            // AutoRunBefore additional apps (scripts, mounts, …).
+            foreach (var a in addApps.Where(a => a.AutoRunBefore))
+                RunProcess(a.ApplicationPath, a.CommandLine, emulator, game, a.UseEmulator, $"autorun-before \"{a.Name}\"");
 
             if (useDos && !string.IsNullOrEmpty(target))
             {

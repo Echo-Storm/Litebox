@@ -122,11 +122,24 @@ internal static class EmuPlugins
         if (p == null) return Array.Empty<EmulatorBiosFile>();
         try
         {
-            string? cmd = null; try { cmd = emu.CommandLine; } catch { }
+            // The PLATFORM command line matters: for RetroArch it carries the
+            // "-L <core>" the plugin parses to know WHICH bios set applies
+            // (swanstation → PSX scph*, …). Fall back to the emulator-level one.
+            string? cmd = null;
+            try
+            {
+                var eps = emu.GetAllEmulatorPlatforms();
+                var ep = eps?.FirstOrDefault(x => string.Equals(Safe(() => x.Platform), platform, StringComparison.OrdinalIgnoreCase));
+                cmd = Safe(() => ep?.CommandLine);
+            }
+            catch { }
+            if (string.IsNullOrWhiteSpace(cmd)) { try { cmd = emu.CommandLine; } catch { } }
             return p.GetBiosFilesForPlatform(ResolveAppPath(emu), platform, cmd) ?? Array.Empty<EmulatorBiosFile>();
         }
         catch { return Array.Empty<EmulatorBiosFile>(); }
     }
+
+    private static T? Safe<T>(Func<T?> f) { try { return f(); } catch { return default; } }
 
     public static string[] Cores(IEmulator emu)
     {

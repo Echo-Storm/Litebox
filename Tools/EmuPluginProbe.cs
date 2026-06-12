@@ -71,6 +71,45 @@ internal static class EmuPluginProbe
             Console.WriteLine($"  \"{c}\"\n    → \"{r}\"");
         }
 
+        // ── GetBiosFilesForPlatform ──────────────────────────────────────
+        Console.WriteLine("\n== GetBiosFilesForPlatform ==");
+        (string platform, string cl)[] biosCases =
+        {
+            ("Sony Playstation", "-L \"cores\\swanstation_libretro.dll\" -f"),
+            ("Sony Playstation", "-L \"cores\\mednafen_psx_hw_libretro.dll\" -f"),
+            ("3DO Interactive Multiplayer", "-L \"cores\\opera_libretro.dll\" -f"),
+            ("Super Nintendo Entertainment System", "-L \"cores\\snes9x_libretro.dll\" -f"),
+        };
+        foreach (var (platform, cl) in biosCases)
+        {
+            Console.WriteLine($"  [{platform}]  cmdline={cl}");
+            try
+            {
+                var files = plugin.GetBiosFilesForPlatform(exe, platform, cl);
+                if (files == null) { Console.WriteLine("    (null)"); }
+                else
+                {
+                    int n = 0;
+                    foreach (var b in files)
+                    {
+                        var g = b.ApplicableGroup;
+                        Console.WriteLine($"    required={b.Required} file=\"{b.FileName}\" group=[id={g?.Id} req={g?.IsGroupRequired} all={g?.AllItemsRequired} desc=\"{g?.Description}\"]");
+                        n++;
+                    }
+                    if (n == 0) Console.WriteLine("    (empty)");
+                }
+            }
+            catch (Exception ex) { Console.WriteLine("    <threw: " + (ex.InnerException?.Message ?? ex.Message) + ">"); }
+            // The 2-arg overload (no cmdline) — what LB's per-platform page may use.
+            try
+            {
+                var files2 = plugin.GetBiosFilesForPlatform(platform);
+                int n2 = 0; foreach (var b in files2 ?? Enumerable.Empty<EmulatorBiosFile>()) n2++;
+                Console.WriteLine($"    [2-arg overload] count={n2}");
+            }
+            catch (Exception ex) { Console.WriteLine("    [2-arg overload] <threw: " + (ex.InnerException?.Message ?? ex.Message) + ">"); }
+        }
+
         // ── Read-only info ───────────────────────────────────────────────
         Console.WriteLine("\n== GetCurrentVersion ==");
         try { Console.WriteLine("  " + plugin.GetCurrentVersion(exe)); }

@@ -112,6 +112,7 @@ internal static class HostBoot
         HostLaunch.Configure(reg, store, lbRoot);
         Pause.PauseManager.Configure(LiteBoxConfig.LoadForExe(), lbRoot);   // pause screens (hotkey + suspend + AHK)
         EmuPlugins.Configure(reg);   // emulator-integration plugins (RetroArch/Dolphin/… DLLs)
+        DependencyCheck.Configure(LiteBoxConfig.LoadForExe(), lbRoot);   // pre-launch bios/dependency check
 
         EventBus.FirePluginInitialized(reg);
 
