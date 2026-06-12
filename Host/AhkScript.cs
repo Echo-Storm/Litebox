@@ -75,6 +75,31 @@ internal static class AhkScript
         lock (_lock) KillLocked();
     }
 
+    /// <summary>Runs a ONE-OFF script (pause / resume / save-state / exit-game …):
+    /// spawned the same way as the running script but not tracked as "the" game
+    /// script — it is expected to do its thing and exit by itself. The temp file is
+    /// deleted when the process exits (or by the caller's Kill on the returned
+    /// process). Returns null when the script is empty / AHK missing / spawn failed.</summary>
+    public static Process? RunOneOff(string? script, string lbRoot)
+    {
+        if (IsScriptEmpty(script)) return null;
+        try
+        {
+            var exe = Path.Combine(lbRoot, "ThirdParty", "AutoHotkey", "AutoHotkey.exe");
+            if (!File.Exists(exe)) { Console.WriteLine("[ahk] AutoHotkey.exe not found — one-off skipped"); return null; }
+            var dir = Path.Combine(lbRoot, "Metadata", "Temp");
+            Directory.CreateDirectory(dir);
+            var tmp = Path.Combine(dir, Guid.NewGuid().ToString());
+            File.WriteAllText(tmp, "#NoTrayIcon\n" + script);
+            var proc = Process.Start(new ProcessStartInfo(exe, "\"" + tmp + "\"") { UseShellExecute = false });
+            if (proc == null) { try { File.Delete(tmp); } catch { } return null; }
+            proc.EnableRaisingEvents = true;
+            proc.Exited += (_, _) => { try { File.Delete(tmp); } catch { } };
+            return proc;
+        }
+        catch (Exception ex) { Console.WriteLine("[ahk] one-off failed: " + ex.Message); return null; }
+    }
+
     private static void KillLocked()
     {
         try { if (_proc != null && !_proc.HasExited) { _proc.Kill(); Console.WriteLine("[ahk] running script killed"); } }

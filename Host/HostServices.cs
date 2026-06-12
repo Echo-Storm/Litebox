@@ -203,7 +203,12 @@ internal static class HostLaunch
                     // emulator spawn, killed on game exit (see AhkScript / LB parity).
                     if (!DryRun && main.Value.useEmu && emulator != null)
                         AhkScript.StartGameScript(SafeStr(() => emulator.AutoHotkeyScript), _lbRoot);
-                    RunProcess(main.Value.path, main.Value.args, emulator, game, main.Value.useEmu, "main");
+                    // Pause screen: arm the global hotkey + remember the emulator
+                    // process for suspend/resume (PauseManager.Disarm in the finally).
+                    Action<Process> onSpawned = (main.Value.useEmu && emulator != null)
+                        ? p => Pause.PauseManager.Arm(p, emulator, game)
+                        : null;
+                    RunProcess(main.Value.path, main.Value.args, emulator, game, main.Value.useEmu, "main", onSpawned);
                 }
                 else if (!DryRun)
                     System.Windows.Forms.MessageBox.Show(
@@ -221,6 +226,7 @@ internal static class HostLaunch
         catch (Exception ex) { Console.WriteLine("[launch] error: " + ex.Message); }
         finally
         {
+            Pause.PauseManager.Disarm();  // hotkey off + resume a still-frozen process + close the screen
             AhkScript.KillGameScript();   // running script dies with the game (LB parity)
             if (!DryRun && gi >= 0) { try { _store.JournalPlayTime(gi, (int)sw.Elapsed.TotalSeconds); } catch { } }
             Fire(p => p.OnGameExited());
@@ -252,7 +258,7 @@ internal static class HostLaunch
     }
 
     /// <summary>Resolves the command, spawns (or logs in DryRun), waits for exit.</summary>
-    private static void RunProcess(string targetPath, string cmd, IEmulator emulator, IGame game, bool useEmu, string label)
+    private static void RunProcess(string targetPath, string cmd, IEmulator emulator, IGame game, bool useEmu, string label, Action<Process> onSpawned = null)
     {
         if (string.IsNullOrEmpty(targetPath)) return;
 
@@ -272,7 +278,7 @@ internal static class HostLaunch
             fileName = ResolvePath(targetPath);   // direct launch (PC, TeknoParrot, scripts)
             args = cmd?.Trim() ?? "";
         }
-        Spawn(fileName, args, label);
+        Spawn(fileName, args, label, onSpawned);
     }
 
     /// <summary>The EmulatorPlatform matching the game's platform, else the emulator's default platform.</summary>
@@ -612,7 +618,7 @@ internal static class HostLaunch
     }
 
     /// <summary>Spawns a process (or logs it in DryRun) and waits for exit.</summary>
-    private static void Spawn(string fileName, string args, string label)
+    private static void Spawn(string fileName, string args, string label, Action<Process> onSpawned = null)
     {
         if (string.IsNullOrEmpty(fileName)) return;
         if (DryRun) { Console.WriteLine($"[launch/dry] {label}: \"{fileName}\" {args}"); return; }
@@ -628,6 +634,7 @@ internal static class HostLaunch
                 WorkingDirectory = SafeDir(fileName) ?? _lbRoot ?? AppContext.BaseDirectory,
             };
             using var proc = Process.Start(psi);
+            if (proc != null && onSpawned != null) { try { onSpawned(proc); } catch { } }
             proc?.WaitForExit();
         }
         catch (Exception ex) { Console.WriteLine($"[launch] {label} error: {ex.Message}"); }

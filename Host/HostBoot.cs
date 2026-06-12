@@ -110,6 +110,7 @@ internal static class HostBoot
         // Launch lifecycle: drop/reload the optional tier + notify launching plugins.
         HostLaunch.DryRun = args.Contains("--drylaunch");
         HostLaunch.Configure(reg, store, lbRoot);
+        Pause.PauseManager.Configure(LiteBoxConfig.LoadForExe(), lbRoot);   // pause screens (hotkey + suspend + AHK)
 
         EventBus.FirePluginInitialized(reg);
 
