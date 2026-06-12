@@ -61,6 +61,25 @@ if (args.Contains("--dump-ctors"))
 if (args.Contains("--probe-emuplugin"))
     return EmuPluginProbe.Run();
 
+// Dump the pending write-back ops of the REAL deploy (diagnostic, read-only).
+if (args.Contains("--dump-oplog"))
+{
+    // Sqlite + friends live in LB\Core (the deploy), not in bin — probe there.
+    System.Runtime.Loader.AssemblyLoadContext.Default.Resolving += (ctx, name) =>
+    {
+        var p = Path.Combine(@"C:\Users\mehdi\source\repos\scrapper-project\LB\Core", name.Name + ".dll");
+        return File.Exists(p) ? ctx.LoadFromAssemblyPath(p) : null;
+    };
+    var dbPath = @"C:\Users\mehdi\source\repos\scrapper-project\LB\Core\LiteBox.pending.db";
+    using var log = LbApiHost.Host.Data.OpLog.Open(dbPath);
+    var ops = log?.ReadAll();
+    Console.WriteLine($"pending ops: {ops?.Count ?? -1}");
+    if (ops != null)
+        foreach (var op in ops)
+            Console.WriteLine($"  #{op.Seq} {op.OpType} {op.Entity}/{op.Id} parent={op.ParentId} field={op.Field} value={(op.Value?.Length > 120 ? op.Value.Substring(0, 120) + "…" : op.Value)}");
+    return 0;
+}
+
 // Write-back round-trip test (temp files only — never touches real LB data / pending db).
 if (args.Contains("--selftest-writeback"))
     return WriteBackSelfTest.Run();

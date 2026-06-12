@@ -33,6 +33,12 @@ internal sealed class HostDataManagerXml : DummyDataManager
     /// <summary>Read-only mode passthrough to the store (GUI option). True = never write to disk.</summary>
     public bool ReadOnly { get => _store?.ReadOnly ?? true; set { if (_store != null) _store.ReadOnly = value; } }
 
+    /// <summary>Opportunistic write-back: flush the pending op-log to the XMLs NOW
+    /// when it is safe (not read-only, LaunchBox/BigBox not running). Used by the
+    /// editors so a change is on disk when their window closes instead of waiting
+    /// for LiteBox to exit. No-op otherwise (the log keeps the ops).</summary>
+    public void FlushIfSafe() { try { _store?.FlushJournalIfSafe(); } catch { } }
+
     public HostDataManagerXml(GameStore store, string dataDir, string imagesRoot)
     {
         _store = store;
