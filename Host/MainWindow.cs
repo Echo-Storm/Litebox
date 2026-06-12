@@ -838,7 +838,9 @@ internal sealed class MainWindow : Form
                 if (r is not AllNode && ParentalHidesNode(r)) continue;   // parental: drop hidden categories/platforms
                 _sources.Nodes.Add(BuildTreeNode(r));
             }
-            _sources.ExpandAll();
+            // Collapsed by default — restoring the saved selection (RestoreSelection)
+            // auto-expands just the path to the selected node.
+            _sources.CollapseAll();
         }
         finally { _sources.EndUpdate(); }
         // Selection (saved category/game) is restored by RestoreSelection().
