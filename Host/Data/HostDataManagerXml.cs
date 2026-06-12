@@ -39,6 +39,11 @@ internal sealed class HostDataManagerXml : DummyDataManager
     /// for LiteBox to exit. No-op otherwise (the log keeps the ops).</summary>
     public void FlushIfSafe() { try { _store?.FlushJournalIfSafe(); } catch { } }
 
+    /// <summary>Scoped variant for the emulator editors: flush ONLY the ops targeting
+    /// Emulators.xml, leaving game/playlist ops pending until close. LB plugins read
+    /// the XMLs directly (no settings API), so this keeps them on fresh emulator data.</summary>
+    public void FlushEmulatorsIfSafe() { try { _store?.FlushEmulatorJournalIfSafe(); } catch { } }
+
     public HostDataManagerXml(GameStore store, string dataDir, string imagesRoot)
     {
         _store = store;
@@ -177,6 +182,7 @@ internal sealed class HostDataManagerXml : DummyDataManager
     {
         if (platform == null || string.IsNullOrEmpty(platform.Name)) return false;
         _platformByName.Remove(platform.Name);
+        if (platform is HostPlatform hp) _platforms.Remove(hp);
         _store?.RecordEntityDelete("Platform", platform.Name);
         return true;
     }
@@ -194,6 +200,7 @@ internal sealed class HostDataManagerXml : DummyDataManager
     {
         if (platformCategory == null || string.IsNullOrEmpty(platformCategory.Name)) return false;
         _categoryByName.Remove(platformCategory.Name);
+        if (platformCategory is HostPlatformCategory hc) _categories.Remove(hc);
         _store?.RecordEntityDelete("PlatformCategory", platformCategory.Name);
         return true;
     }
@@ -217,6 +224,7 @@ internal sealed class HostDataManagerXml : DummyDataManager
     {
         if (emulator == null || string.IsNullOrEmpty(emulator.Id)) return false;
         _emulatorById.Remove(emulator.Id);
+        if (emulator is HostEmulator he) _emulators.Remove(he);
         _store?.RecordEntityDelete("Emulator", emulator.Id);
         return true;
     }

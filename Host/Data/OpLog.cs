@@ -19,6 +19,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Microsoft.Data.Sqlite;
 
 namespace LbApiHost.Host.Data;
@@ -136,6 +137,34 @@ internal sealed class OpLog : IDisposable
                 return Convert.ToInt32(cmd.ExecuteScalar());
             }
             catch { return 0; }
+        }
+    }
+
+    /// <summary>Removes specific ops by seq — the scoped-flush counterpart of <see cref="Clear"/>.
+    /// Same golden rule: call ONLY after the target XML swap succeeded.</summary>
+    public void DeleteSeqs(IReadOnlyList<long> seqs)
+    {
+        if (!Enabled || seqs == null || seqs.Count == 0) return;
+        lock (_lock)
+        {
+            try
+            {
+                using (var tx = _conn.BeginTransaction())
+                {
+                    for (int i = 0; i < seqs.Count; i += 500)
+                    {
+                        using var cmd = _conn.CreateCommand();
+                        cmd.Transaction = tx;
+                        cmd.CommandText = "DELETE FROM ops WHERE seq IN (" + string.Join(",", seqs.Skip(i).Take(500)) + ")";
+                        cmd.ExecuteNonQuery();
+                    }
+                    tx.Commit();
+                }
+                using var wal = _conn.CreateCommand();
+                wal.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
+                wal.ExecuteNonQuery();
+            }
+            catch (Exception ex) { Console.WriteLine("[oplog] delete seqs failed: " + ex.Message); }
         }
     }
 

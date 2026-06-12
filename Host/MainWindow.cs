@@ -262,11 +262,11 @@ internal sealed class MainWindow : Form
             bool ro = (_dm as HostDataManagerXml)?.ReadOnly ?? true;
             using var w = new Emulators.ManageEmulatorsWindow(ro, LbApiHost.Host.Media.MediaResolver.LbRoot ?? "");
             w.ShowDialog(this);
-            // Opportunistic flush: get the edits into the XMLs right away when
-            // safe (LB/BB closed) — otherwise the op-log keeps them until the
-            // next safe moment (LiteBox close / next boot). Matches the natural
-            // "I closed the editor, it's saved" expectation.
-            (_dm as HostDataManagerXml)?.FlushIfSafe();
+            // Opportunistic SCOPED flush: only the Emulators.xml ops go to disk now
+            // (when safe — LB/BB closed); game/playlist ops stay pending until the
+            // close-time flush. Matches the natural "I closed the editor, it's
+            // saved" expectation without committing unrelated half-done edits.
+            (_dm as HostDataManagerXml)?.FlushEmulatorsIfSafe();
         };
         bar.Items.Add(emusBtn);
 

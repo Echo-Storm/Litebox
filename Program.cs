@@ -9,7 +9,7 @@ using System.Runtime.InteropServices;
 // The app is a WinExe (no console by default → transparent when launched by the launcher). Only
 // show a console with --debug (or --headless diagnostics): attach to the launching terminal if any,
 // else allocate a fresh one, and route Console.Out/Error to it.
-if (args.Contains("--debug") || args.Contains("--headless") || args.Contains("--selftest-writeback") || args.Contains("--seed-writeback") || args.Contains("--dump-extra"))
+if (args.Contains("--debug") || args.Contains("--headless") || args.Contains("--selftest-writeback") || args.Contains("--seed-writeback") || args.Contains("--dump-extra") || args.Contains("--dump-emupresets"))
     DebugConsole.Enable();
 
 // Act like LaunchBox's root launcher: LiteBox.exe lives in <LB>\Core (so
@@ -79,6 +79,10 @@ if (args.Contains("--dump-oplog"))
             Console.WriteLine($"  #{op.Seq} {op.OpType} {op.Entity}/{op.Id} parent={op.ParentId} field={op.Field} value={(op.Value?.Length > 120 ? op.Value.Substring(0, 120) + "…" : op.Value)}");
     return 0;
 }
+
+// Dump LB's Add-Emulator presets from LB\Metadata\LaunchBox.Metadata.db (read-only).
+if (args.Contains("--dump-emupresets"))
+    return EmuPresetDump.Run(args);
 
 // Write-back round-trip test (temp files only — never touches real LB data / pending db).
 if (args.Contains("--selftest-writeback"))

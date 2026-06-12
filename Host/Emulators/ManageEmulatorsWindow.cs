@@ -1,7 +1,11 @@
-// Manage Emulators window (LB parity, V3 v1: list + Edit). Columns: Name,
-// Application Path, Default Command-Line Parameters, Version (async via the
-// integration plugin) and a ✓ Status when a plugin claims the emulator.
-// Add / Delete / Update All are deferred (entity creation + batch installs).
+// Manage Emulators window (LB parity, V3). Columns: Name, Application Path,
+// Default Command-Line Parameters, Version (async via the integration plugin)
+// and a ✓ Status when a plugin claims the emulator. Add… uses LB's own preset
+// DB (AddEmulatorWindow); Delete confirms then routes through the op-log
+// (the flush also drops the emulator's EmulatorPlatform rows).
+//
+// The zero-GUID emulator (LB's hidden "unassigned" placeholder row) is
+// filtered out, like LaunchBox's own Manage Emulators does.
 //
 // Read-only mode: Edit opens the editor with every input disabled.
 
@@ -49,17 +53,25 @@ internal sealed class ManageEmulatorsWindow : Form
         var footer = new Panel { Dock = DockStyle.Bottom, Height = 44, BackColor = Panel2 };
         var edit = Btn("Edit…", new Point(12, 8));
         edit.Click += (_, _) => EditSelected();
+        var add = Btn("Add…", new Point(116, 8));
+        add.Enabled = !readOnly;
+        if (readOnly) add.Text = "Add 🔒";
+        add.Click += (_, _) => AddEmulator();
+        var del = Btn("Delete", new Point(220, 8));
+        del.Enabled = !readOnly;
+        if (readOnly) del.Text = "Delete 🔒";
+        del.Click += (_, _) => DeleteSelected();
         // Update All: every plugin-managed emulator with a newer installable
         // version gets InstallEmulator run sequentially (per-emulator progress
-        // dialog). Add/Delete intentionally absent (daily tool, no heavy edits).
-        var updAll = Btn("Update All", new Point(116, 8));
+        // dialog).
+        var updAll = Btn("Update All", new Point(324, 8));
         updAll.Enabled = !readOnly;
         if (readOnly) updAll.Text = "Update All 🔒";
         updAll.Click += (_, _) => UpdateAll();
         var close = Btn("Close", new Point(0, 8));
         close.Click += (_, _) => Close();
         footer.Resize += (_, _) => close.Left = footer.ClientSize.Width - close.Width - 12;
-        footer.Controls.Add(edit); footer.Controls.Add(updAll); footer.Controls.Add(close);
+        footer.Controls.Add(edit); footer.Controls.Add(add); footer.Controls.Add(del); footer.Controls.Add(updAll); footer.Controls.Add(close);
 
         Controls.Add(_list);
         Controls.Add(footer);
@@ -77,6 +89,8 @@ internal sealed class ManageEmulatorsWindow : Form
 
         foreach (var e in emus.OrderBy(x => Safe(() => x.Title) ?? "", StringComparer.OrdinalIgnoreCase))
         {
+            // LB hides its internal "unassigned" placeholder (Guid.Empty) — so do we.
+            if (Guid.TryParse(Safe(() => e.Id) ?? "", out var gid) && gid == Guid.Empty) continue;
             var item = new ListViewItem(new[]
             {
                 Safe(() => e.Title) ?? "?",
@@ -114,6 +128,29 @@ internal sealed class ManageEmulatorsWindow : Form
                 catch { }
             }
         });
+    }
+
+    private void AddEmulator()
+    {
+        using var dlg = new AddEmulatorWindow(_lbRoot);
+        if (dlg.ShowDialog(this) != DialogResult.OK || dlg.Created == null) { return; }
+        // Open the full editor right away so the user can review/adjust the preset.
+        EditEmulatorWindow.Open(dlg.Created, _readOnly, this, _lbRoot);
+        Fill();
+    }
+
+    private void DeleteSelected()
+    {
+        if (_list.SelectedItems.Count == 0 || _list.SelectedItems[0].Tag is not IEmulator e) return;
+        var name = Safe(() => e.Title) ?? "?";
+        if (MessageBox.Show(this,
+                $"Delete \"{name}\"?\n\nIts platform associations are removed too; games assigned to it lose their emulator.",
+                "Delete Emulator", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+        bool ok = false;
+        try { ok = PluginHelper.DataManager?.TryRemoveEmulator(e) ?? false; } catch { }
+        if (!ok)
+            MessageBox.Show(this, "Could not delete the emulator.", "Delete Emulator", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        Fill();
     }
 
     private void EditSelected()

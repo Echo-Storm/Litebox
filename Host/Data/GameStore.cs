@@ -620,6 +620,17 @@ internal sealed class GameStore
         FlushOpsToXml();
     }
 
+    /// <summary>Scoped flush: apply ONLY the ops that target Emulators.xml (Emulator entity +
+    /// EmulatorPlatform collections) and remove just those from the journal — game/playlist ops
+    /// stay pending until the normal close-time flush. Emulator ops touch no other file, so
+    /// partial application is order-safe. This lets LB plugins that read the XMLs directly
+    /// (most have no settings API) see fresh emulator config as soon as the window closes.</summary>
+    public void FlushEmulatorJournalIfSafe()
+    {
+        if (ReadOnly || IsLaunchBoxRunning()) return;
+        FlushOpsToXml(op => op.Entity == "Emulator" || op.Entity == "EmulatorPlatform");
+    }
+
     public static bool IsLaunchBoxRunning()
     {
         try { return Process.GetProcessesByName("LaunchBox").Length > 0 || Process.GetProcessesByName("BigBox").Length > 0; }
@@ -636,10 +647,18 @@ internal sealed class GameStore
     // Group ops by target XML file, apply in seq order on the loaded DOM (preserving unknown
     // fields), write each touched doc to .tmp, atomically swap ALL, then clear the log. WAL golden
     // rule: NEVER clear before every swap succeeds. Returns the number of distinct games written.
-    private int FlushOpsToXml()
+    // With a scope predicate, only matching ops are applied and only THOSE are removed from the
+    // log (DeleteSeqs) — the rest stays pending for a later flush.
+    private int FlushOpsToXml(Func<Op, bool> scope = null)
     {
         var ops = _oplog?.ReadAll();
         if (ops == null || ops.Count == 0) return 0;
+        if (scope != null) { ops = ops.Where(scope).ToList(); if (ops.Count == 0) return 0; }
+        void ClearFlushed()
+        {
+            if (scope == null) _oplog.Clear();
+            else _oplog.DeleteSeqs(ops.Select(o => o.Seq).ToList());
+        }
 
         var docs = new Dictionary<string, XDocument>(StringComparer.OrdinalIgnoreCase);
         var index = new Dictionary<string, Dictionary<Guid, XElement>>(StringComparer.OrdinalIgnoreCase);
@@ -844,7 +863,7 @@ internal sealed class GameStore
 
         // Deleted playlists are whole-file removals — don't write those files.
         foreach (var df in playlistDeletes) docs.Remove(df);
-        if (docs.Count == 0 && playlistDeletes.Count == 0) { _oplog.Clear(); return 0; }
+        if (docs.Count == 0 && playlistDeletes.Count == 0) { ClearFlushed(); return 0; }
 
         // Snapshot the pristine originals (still untouched on disk) before any swap.
         BackupBeforeWrite(docs.Keys);
@@ -862,10 +881,10 @@ internal sealed class GameStore
         // Phase 2b: whole-file playlist deletes.
         foreach (var df in playlistDeletes)
             try { if (File.Exists(df)) File.Delete(df); } catch (Exception ex) { Console.WriteLine("[store] delete playlist file " + df + ": " + ex.Message); }
-        // Phase 3: ONLY now clear the log.
-        _oplog.Clear();
+        // Phase 3: ONLY now clear the log (scoped → only the ops we just applied).
+        ClearFlushed();
 
-        Console.WriteLine($"[store] flushed {touched.Count} game(s) across {docs.Count} file(s)");
+        Console.WriteLine($"[store] flushed {touched.Count} game(s) across {docs.Count} file(s)" + (scope != null ? " [scoped]" : ""));
         return touched.Count;
     }
 
