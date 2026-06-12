@@ -152,9 +152,11 @@ internal sealed class HostDataManagerXml : DummyDataManager
     public override IPlatformCategory[] GetAllPlatformCategories() => _categories.ToArray();
     public override IPlatformCategory GetPlatformCategoryByName(string name)
         => (name != null && _categoryByName.TryGetValue(name, out var c)) ? c : null;
-    // SDK API can only carry IPlatform; categories/playlists aren't IPlatform in this SDK,
-    // so this returns platforms only. The GUI uses RootNodes (the full object tree).
-    public override IList<IPlatform> GetRootPlatformsCategoriesPlaylists() => _platforms.ToList();
+    // The SDK tree is IList<IPlatform>, but categories/playlists aren't IPlatform here — so we wrap
+    // them in IPlatform adapters that also implement IPlatformCategory/IPlaylist (see SdkTree), the
+    // way real LaunchBox's nodes do. This is what plugin consumers (ExtendDB's LaunchBoxWeb/BigBoxWeb
+    // tree) walk via `node is IPlatformCategory` + GetChildren(). The native GUI still uses RootNodes.
+    public override IList<IPlatform> GetRootPlatformsCategoriesPlaylists() => SdkTree.WrapChildren(_roots);
 
     public override IPlatform AddNewPlatform(string name)
     {

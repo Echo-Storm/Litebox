@@ -75,6 +75,12 @@ internal sealed class MainWindow : Form
     private readonly ToolStripComboBox _sortCombo;
     private readonly ToolStripButton _dirBtn;
     private readonly ToolStripLabel _count;
+    private ToolStripLabel _extDbInd;      // "ExtendDB present" indicator (toolbar, before the count)
+    private ToolStripLabel _parentalInd;   // parental-control padlock indicator (toolbar, before the count)
+    private Image _padlockClosed, _padlockOpen;
+    // Platforms whose games parental control must hide from the list (a platform directly listed,
+    // or any platform sitting under a hidden category). Recomputed with the tree. See ParentalBridge.
+    private readonly HashSet<string> _parentalHiddenPlatforms = new(StringComparer.OrdinalIgnoreCase);
 
     // right-hand details
     private readonly HeroPanel _hero;            // fanart + clear logo (pulse) + rating + heart
@@ -292,6 +298,23 @@ internal sealed class MainWindow : Form
         _count = new ToolStripLabel("") { ForeColor = SubFg, Alignment = ToolStripItemAlignment.Right };
         bar.Items.Add(_count);
 
+        // ExtendDB / parental-control indicators, just to the left of the game count.
+        // Right-aligned items lay out right→left in add order, so adding these AFTER _count
+        // puts them on its left (the padlock nearest the count, "ExtendDB" further left).
+        _parentalInd = new ToolStripLabel("")
+        {
+            Alignment = ToolStripItemAlignment.Right, Visible = false,
+            ImageScaling = ToolStripItemImageScaling.None,
+            DisplayStyle = ToolStripItemDisplayStyle.Image,
+        };
+        bar.Items.Add(_parentalInd);
+        _extDbInd = new ToolStripLabel("ExtendDB")
+        {
+            ForeColor = Accent, Alignment = ToolStripItemAlignment.Right, Visible = false,
+            ToolTipText = "ExtendDB plugin detected — its metadata & media cache power this view",
+        };
+        bar.Items.Add(_extDbInd);
+
         // Persist layout / window / selection once, at close (not per change).
         FormClosing += (_, _) => { try { SaveAll(); } catch { } };
 
@@ -301,10 +324,17 @@ internal sealed class MainWindow : Form
         // React to game launch start/end (for the running screen + during-game unload).
         HostLaunch.GameStarted += OnGameStarted;
         HostLaunch.GameEnded += OnGameEnded;
+        // React to ExtendDB parental lock/unlock so the tree, list and padlock re-sync live.
+        ParentalBridge.StateChanged += OnParentalStateChanged;
+        // App-wide ExtendDB hotkeys (kiosk F10/F11 + parental key) — ExtendDB's own WPF-input
+        // hotkeys don't fire in a WinForms host, so the host captures them. See HostHotKeys.
+        HostHotKeys.Install(this);
         FormClosed += (_, _) =>
         {
             HostLaunch.GameStarted -= OnGameStarted;
             HostLaunch.GameEnded -= OnGameEnded;
+            ParentalBridge.StateChanged -= OnParentalStateChanged;
+            HostHotKeys.Uninstall();
             try { Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged; } catch { }
             HostStateManager.SelectedGamesProvider = null;
         };
@@ -384,6 +414,7 @@ internal sealed class MainWindow : Form
             RestoreSort();           // last sort column + direction
             PopulateSources();       // build the tree
             RestoreSelection();      // last category + game
+            RefreshExtendDbIndicators();   // ExtendDB-present + parental padlock
             try { ActiveControl = _games; _games.Focus(); } catch { }
             if (_cfg.GetBool("PosterMode", false)) _posterBtn.Checked = true;   // → SetPosterMode(true)
         };
@@ -421,7 +452,9 @@ internal sealed class MainWindow : Form
 
         static string DateStr(object v) => v is DateTime d && d != default ? d.ToString("yyyy-MM-dd") : "";
 
-        Col("title", "Title", 320, g => S(Safe(() => g.Title)), g => S(Safe(() => g.Title)));
+        // Sort the Title column by the article-stripped compare name (LaunchBox-style: "The Legend
+        // of Zelda" sorts under L), while still DISPLAYING the full title.
+        Col("title", "Title", 320, g => CompareName(g), g => S(Safe(() => g.Title)));
         Col("platform", "Platform", 150, g => S(Safe(() => g.Platform)), g => S(Safe(() => g.Platform)));
         Col("developer", "Developer", 150, g => S(Safe(() => g.Developer)), g => S(Safe(() => g.Developer)));
         Col("publisher", "Publisher", 150, g => S(Safe(() => g.Publisher)), g => S(Safe(() => g.Publisher)), visible: false);
@@ -470,6 +503,7 @@ internal sealed class MainWindow : Form
         lv.ColumnClicked += OnHeaderColumnClicked;
         lv.ColumnChooserRequested += ShowColumnChooser;
         lv.ViewChanged += OnViewChanged;
+        lv.SearchForVirtualItem += OnTypeAheadSearch;   // type-to-jump (compare-name prefix)
         return lv;
     }
 
@@ -477,6 +511,96 @@ internal sealed class MainWindow : Form
     {
         if (_count != null) _count.Text = $"{_games.VisibleGames.Count} / {_games.TotalCount} games";
         if (_posterMode) RefreshPoster();
+    }
+
+    // ── ExtendDB / parental indicators ─────────────────────────────────────────
+    // Reflect ExtendDB's presence and parental-control state into the toolbar:
+    //   • "ExtendDB" label — shown whenever the plugin is loaded.
+    //   • padlock — shown when parental control is CONFIGURED; closed (amber) when the
+    //     session is locked (restrictions enforced), open (grey) when unlocked. Mirrors
+    //     launchbox-web's lock indicator. Hidden entirely when parental is not configured.
+    private void RefreshExtendDbIndicators()
+    {
+        if (_extDbInd == null || _parentalInd == null) return;
+
+        bool ext = false;
+        try { ext = GameCacheBridge.ExtendDbPresent; } catch { }
+        _extDbInd.Visible = ext;
+
+        bool show = false, locked = false;
+        try { show = ParentalBridge.Enabled; locked = ParentalBridge.Locked; } catch { }
+        _parentalInd.Visible = show;
+        if (show)
+        {
+            _padlockClosed ??= GlyphPadlock(true);
+            _padlockOpen ??= GlyphPadlock(false);
+            _parentalInd.Image = locked ? _padlockClosed : _padlockOpen;
+            _parentalInd.ToolTipText = locked
+                ? "Parental control ACTIVE (locked) — restricted categories and games are hidden"
+                : "Parental control unlocked";
+        }
+    }
+
+    // ExtendDB parental lock/unlock fired (rare under LiteBox, but keep it live): refresh the
+    // snapshot, rebuild the tree (hidden nodes drop), re-filter the list and update the padlock.
+    private void OnParentalStateChanged()
+    {
+        if (IsDisposed) return;
+        if (InvokeRequired) { try { BeginInvoke((Action)OnParentalStateChanged); } catch { } return; }
+        try
+        {
+            ParentalBridge.Refresh();
+            object keep = _currentNode;
+            if (keep != null && keep is not AllNode && ParentalHidesNode(keep)) keep = AllNode.Instance;
+            PopulateSources();                                  // recomputes hidden set + drops hidden nodes
+            _currentNode = null;                                // force the re-fill (LoadNode guards same-node)
+            object sel = keep ?? AllNode.Instance;
+            if (_treeNodeMap.TryGetValue(sel, out var tn)) _sources.SelectedNode = tn;   // may fire AfterSelect → LoadNode
+            LoadNode(sel);                                      // guaranteed re-fill (no-op if the line above already did)
+            RefreshExtendDbIndicators();
+        }
+        catch { }
+    }
+
+    // True when a tree node (platform / category / playlist) must be hidden by parental control.
+    private bool ParentalHidesNode(object n)
+    {
+        try { return ParentalBridge.Active && ParentalBridge.IsNameHidden(HostPlatformCategory.NodeName(n)); }
+        catch { return false; }
+    }
+
+    // True when a game must be hidden from the list: force-all, a hidden platform/category, or a
+    // disallowed ESRB rating. Loading-vs-display only — the game stays in memory, just not shown.
+    private bool ParentalHidesGame(IGame g)
+    {
+        if (!ParentalBridge.Active) return false;
+        if (ParentalBridge.ForceAll) return true;
+        string plat = S(Safe(() => g.Platform));
+        if (plat.Length > 0 && _parentalHiddenPlatforms.Contains(plat)) return true;
+        return !ParentalBridge.IsRatingAllowed(S(Safe(() => g.Rating)));
+    }
+
+    // Expand the parental hide-list into the concrete set of platform names whose games must be
+    // hidden: a platform listed directly, OR any platform under a hidden category. Built with the
+    // tree (roots known) so the per-game filter is a plain HashSet lookup.
+    private void RecomputeParentalHiddenPlatforms()
+    {
+        _parentalHiddenPlatforms.Clear();
+        if (!ParentalBridge.Active || _treeRoots == null) return;
+
+        void Walk(object n, bool inherited)
+        {
+            bool hidden = inherited || ParentalBridge.IsNameHidden(HostPlatformCategory.NodeName(n));
+            if (n is IPlatform p)
+            {
+                if (hidden && !string.IsNullOrEmpty(p.Name)) _parentalHiddenPlatforms.Add(p.Name);
+            }
+            else if (n is HostPlatformCategory c)
+            {
+                foreach (var ch in c.Children) Walk(ch, hidden);
+            }
+        }
+        foreach (var r in _treeRoots) { if (r is AllNode) continue; Walk(r, false); }
     }
 
     private void OnGameRightClicked(IGame[] games, Point screen)
@@ -695,13 +819,18 @@ internal sealed class MainWindow : Form
         else { try { roots.AddRange(_dm.GetAllPlatforms()); } catch { } }
 
         _treeRoots = roots;
+        RecomputeParentalHiddenPlatforms();   // expand the hide-list before building the tree / filtering
         BuildTreeIcons(roots);
         _treeNodeMap.Clear();
         _sources.BeginUpdate();
         try
         {
             _sources.Nodes.Clear();
-            foreach (var r in roots) _sources.Nodes.Add(BuildTreeNode(r));
+            foreach (var r in roots)
+            {
+                if (r is not AllNode && ParentalHidesNode(r)) continue;   // parental: drop hidden categories/platforms
+                _sources.Nodes.Add(BuildTreeNode(r));
+            }
             _sources.ExpandAll();
         }
         finally { _sources.EndUpdate(); }
@@ -716,7 +845,11 @@ internal sealed class MainWindow : Form
         var tn = new TreeNode(text) { Tag = obj, ImageKey = imgKey, SelectedImageKey = imgKey };
         _treeNodeMap[obj] = tn;
         if (obj is HostPlatformCategory c)
-            foreach (var child in c.Children) tn.Nodes.Add(BuildTreeNode(child));
+            foreach (var child in c.Children)
+            {
+                if (ParentalHidesNode(child)) continue;   // parental: drop hidden child categories/platforms
+                tn.Nodes.Add(BuildTreeNode(child));
+            }
         return tn;
     }
 
@@ -861,6 +994,8 @@ internal sealed class MainWindow : Form
         object node = AllNode.Instance;
         var savedCat = _cfg.Get("LastCategory");
         if (!string.IsNullOrEmpty(savedCat)) node = FindNodeByKey(savedCat) ?? AllNode.Instance;
+        // The saved category may now be parental-hidden (no TreeNode built for it): don't reopen it.
+        if (node is not AllNode && ParentalHidesNode(node)) node = AllNode.Instance;
 
         // Select the node visually (AfterSelect → LoadNode); the explicit LoadNode below is then a
         // no-op via its guard, but kept so a node with no TreeNode still fills the list.
@@ -1002,6 +1137,33 @@ internal sealed class MainWindow : Form
         return bmp;
     }
 
+    // Toolbar padlock for the parental indicator. closed = locked (amber, shackle down on both
+    // legs); open = unlocked (grey, one leg lifted). 16×16 to match the toolbar ImageScalingSize.
+    private static Image GlyphPadlock(bool closed)
+    {
+        var bmp = new Bitmap(16, 16);
+        using var g = Graphics.FromImage(bmp);
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        Color col = closed ? Color.FromArgb(255, 196, 0) : Color.FromArgb(150, 150, 152);   // amber locked / grey unlocked
+        using var pen = new Pen(col, 1.6f);
+        using var br = new SolidBrush(col);
+        if (closed)
+        {
+            g.DrawArc(pen, 4.5f, 2f, 7, 8, 180, 180);     // shackle: top half-circle
+            g.DrawLine(pen, 4.5f, 6f, 4.5f, 8.5f);        // left leg into body
+            g.DrawLine(pen, 11.5f, 6f, 11.5f, 8.5f);      // right leg into body
+        }
+        else
+        {
+            g.DrawArc(pen, 5.5f, 1f, 7, 8, 150, 180);     // shackle lifted/open
+            g.DrawLine(pen, 11.7f, 4.6f, 11.7f, 8.5f);    // only the right leg meets the body
+        }
+        g.FillRectangle(br, 3, 8, 10, 7);                 // body
+        using var hole = new SolidBrush(Color.FromArgb(30, 30, 30));
+        g.FillEllipse(hole, 7, 10, 2, 2);                 // keyhole
+        return bmp;
+    }
+
     // OLV coalesces SelectionChanged (fires ~½s after SetObjects), so a node
     // click would otherwise clear the pane just after ShowNodeDetails filled it.
     // When nothing is selected in the list, keep showing the current node.
@@ -1058,9 +1220,16 @@ internal sealed class MainWindow : Form
         if (_games == null) return;
         _games.Games = _current;
         string txt = _search?.Text;
-        _games.FilterPredicate = string.IsNullOrWhiteSpace(txt)
+        bool hasTxt = !string.IsNullOrWhiteSpace(txt);
+        bool parental = ParentalBridge.Active;   // hide restricted games (kept in memory, just not shown)
+        _games.FilterPredicate = (!hasTxt && !parental)
             ? (Func<IGame, bool>)null
-            : g => Contains(S(Safe(() => g.Title)), txt) || Contains(S(Safe(() => g.Platform)), txt) || Contains(S(Safe(() => g.Developer)), txt);
+            : g =>
+            {
+                if (parental && ParentalHidesGame(g)) return false;
+                if (!hasTxt) return true;
+                return Contains(S(Safe(() => g.Title)), txt) || Contains(S(Safe(() => g.Platform)), txt) || Contains(S(Safe(() => g.Developer)), txt);
+            };
         _games.RebuildView();   // count + poster updated via ViewChanged
     }
 
@@ -1084,6 +1253,7 @@ internal sealed class MainWindow : Form
         };
         lv.RetrieveVirtualItem += (_, e) => e.Item = new ListViewItem("");
         lv.DrawItem += DrawPosterItem;
+        lv.SearchForVirtualItem += OnTypeAheadSearch;   // type-to-jump (compare-name prefix)
         lv.SelectedIndexChanged += (_, _) => OnPosterSelectionChanged();
         lv.ItemActivate += (_, _) => LaunchSelected();
         lv.MouseUp += OnPosterMouseUp;   // right-click → same game context menu as the list
@@ -2110,6 +2280,42 @@ internal sealed class MainWindow : Form
 
     private static bool Contains(string hay, string needle)
         => !string.IsNullOrEmpty(hay) && hay.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0;
+
+    // ── Type-to-jump (incremental search) ─────────────────────────────────────
+    // Native virtual-ListView type-ahead: the control accumulates the typed keys (with its own
+    // timeout) and raises SearchForVirtualItem; we answer with the index of the first game whose
+    // compare-name (article-stripped, alnum, lower) starts with what was typed — so "secre" jumps to
+    // "Secret of Mana", consistent with the name sort. Setting e.Index makes the ListView select +
+    // scroll to it natively. Shared by the list AND the poster (both mirror _games.VisibleGames).
+    private void OnTypeAheadSearch(object sender, SearchForVirtualItemEventArgs e)
+    {
+        try
+        {
+            if (!e.IsTextSearch) return;
+            string needle = NormalizeTypeAhead(e.Text);
+            if (needle.Length == 0) return;
+            var view = _games.VisibleGames;
+            int n = view.Count;
+            if (n == 0) return;
+            int start = (e.StartIndex >= 0 && e.StartIndex < n) ? e.StartIndex : 0;
+            for (int k = 0; k < n; k++)
+            {
+                int i = (start + k) % n;                       // wrap so repeating a letter cycles
+                if (CompareName(view[i]).StartsWith(needle, StringComparison.Ordinal)) { e.Index = i; return; }
+            }
+        }
+        catch { }
+    }
+
+    // Reduce typed text to the same shape as CompareName (lower, letters+digits only) so a prefix
+    // matches: spaces/punctuation typed by the user are dropped ("secret o" → "secreto").
+    private static string NormalizeTypeAhead(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return "";
+        var sb = new StringBuilder(s.Length);
+        foreach (var c in s) if (char.IsLetterOrDigit(c)) sb.Append(char.ToLowerInvariant(c));
+        return sb.ToString();
+    }
 
     private static string S(string s) => s ?? "";
     private static object N(Func<int?> f) { try { return f(); } catch { return null; } }
