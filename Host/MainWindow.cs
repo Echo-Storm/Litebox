@@ -89,6 +89,7 @@ internal sealed class MainWindow : Form
     private SplitContainer _outerSplit;          // left tree | (middle list + right details) — % persisted
     private SplitContainer _innerSplit;          // middle list | right details — % persisted
     private Panel _detailHost;                    // scroll viewport hosting the detail grid (scrollbar when content overflows)
+    private LaunchButtons _launchButtons;         // Play / Version / ROM group docked at the pane bottom
     private TableLayoutPanel _detailGrid;        // detail layout — sized by RelayoutDetail (fills viewport, or taller → scrolls)
     private double _mediaAspect = 16.0 / 9.0;    // reserved main-media area aspect (16:9 default, 2:3 poster option)
     private List<string> _mediaItems;            // current game's media sources (box first, then screenshots)
@@ -179,7 +180,13 @@ internal sealed class MainWindow : Form
         inner.Panel1.BackColor = Panel;       // shows in the side margins around the centred poster grid
         inner.Panel1.Controls.Add(_poster);   // hidden until poster mode; same cell as the list
         inner.Panel1.Controls.Add(_games);
+        // Launch buttons docked at the bottom of the details pane (always visible,
+        // outside the scrolling detail grid). _detailHost (Fill) is added FIRST so
+        // the bottom panel reserves its space and the grid fills the rest.
         inner.Panel2.Controls.Add(_detailHost);
+        _launchButtons = new LaunchButtons((g, app, emu) =>
+            Safe(() => PluginHelper.LaunchBoxMainViewModel.PlayGame(g, app, emu, null)));
+        inner.Panel2.Controls.Add(_launchButtons);
         inner.Panel1.Resize += (_, _) => LayoutPoster();   // keep the poster grid centred on resize
 
         var outer = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Vertical, BackColor = Bg, SplitterWidth = 4 };
@@ -1539,6 +1546,7 @@ internal sealed class MainWindow : Form
             ScheduleFanart(null, null);
             ClearStrip();
             _meta.Clear(); _vndb.Clear(); _notes.Text = ""; RelayoutDetail();
+            _launchButtons?.HideGame();
             return;
         }
 
@@ -1581,6 +1589,10 @@ internal sealed class MainWindow : Form
         RelayoutDetail();
 
         _notes.Text = S(g.Notes).Replace("\n", "\r\n");
+
+        // Launch buttons (Play / Version / ROM) — reuses the same SDK enumeration
+        // as the right-click menu; the ROM tier lights up only when ExtendDB is loaded.
+        _launchButtons?.ShowFor(g, SafeEmulatorsForPlatform(S(g.Platform)), SafeAddApps(g));
     }
 
     // Right pane when a TREE node (category / platform / playlist / All) is selected.
@@ -1588,6 +1600,7 @@ internal sealed class MainWindow : Form
     {
         _detailsShown = node;
         _heroGame = null;
+        _launchButtons?.HideGame();   // launch group is game-only
         if (node == null || node is AllNode)
         {
             _hero.SetNode(node is AllNode ? "All Games" : "");   // no rating/heart for a node
