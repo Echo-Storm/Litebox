@@ -687,6 +687,13 @@ internal sealed class MainWindow : Form
     // Minimum height reserved for the notes box before the whole pane starts scrolling.
     private const int MinNotesH = 60;
 
+    // Strip row height: 72 for a game's media thumbs (92×52 + slim bar), 104 for a
+    // node's recent-game box thumbs (64×92 portrait, slightly bigger per UX ask).
+    private int _stripRowH = 72;
+
+    // Shared tooltip (recent-game thumbs show the game title on hover).
+    private readonly ToolTip _tips = new();
+
     // Lay out the detail grid inside its scroll viewport. The media area fills the pane width
     // (height = width / aspect, capped to part of the viewport) and the meta card is measured
     // from its wrapped content. If hero + media + strip + meta + a minimum notes box fits the
@@ -722,7 +729,7 @@ internal sealed class MainWindow : Form
             if (mediaH < 90) mediaH = 90;
             metaH = _meta.HeightForWidth(colW);
             vndbH = _vndb.HeightForWidth(colW);
-            return padV + 158 + mediaH + 72 + metaH + vndbH + MinNotesH;
+            return padV + 158 + mediaH + _stripRowH + metaH + vndbH + MinNotesH;
         }
 
         bool overflow = MinContent(fullW, out _, out _, out _) > viewH;
@@ -731,6 +738,8 @@ internal sealed class MainWindow : Form
 
         var rsMedia = tlp.RowStyles[1];
         if (rsMedia.SizeType != SizeType.Absolute || Math.Abs(rsMedia.Height - media) > 0.5) { rsMedia.SizeType = SizeType.Absolute; rsMedia.Height = media; }
+        var rsStrip = tlp.RowStyles[2];
+        if (rsStrip.SizeType != SizeType.Absolute || Math.Abs(rsStrip.Height - _stripRowH) > 0.5) { rsStrip.SizeType = SizeType.Absolute; rsStrip.Height = _stripRowH; }
         var rsMeta = tlp.RowStyles[3];
         if (rsMeta.SizeType != SizeType.Absolute || Math.Abs(rsMeta.Height - meta) > 0.5) { rsMeta.SizeType = SizeType.Absolute; rsMeta.Height = meta; }
         var rsVndb = tlp.RowStyles[4];
@@ -1612,6 +1621,7 @@ internal sealed class MainWindow : Form
             else _meta.Clear();
             _vndb.Clear();
             _notes.Text = "";
+            PopulateNodeRecentStrip(node is AllNode);   // recently played of the node (empty pane → clears)
             RelayoutDetail();
             return;
         }
@@ -1619,7 +1629,7 @@ internal sealed class MainWindow : Form
         _hero.SetNode(HostPlatformCategory.NodeName(node) ?? "");
         LoadImagesAsync(NodeImage(node, clearLogo: true), NodeImage(node, clearLogo: false));
         ScheduleFanart(null, node);
-        ClearStrip();   // nodes have no media strip
+        PopulateNodeRecentStrip(true);   // recent-game box thumbs under the main media
 
         var bits = new List<string> { $"Total Games: {_current.Length}" };
         if (node is IPlatform p)
@@ -1797,6 +1807,7 @@ internal sealed class MainWindow : Form
     private void ScheduleMedia(IGame g)
     {
         if (_mediaTimer != null) { _mediaTimer.Stop(); _mediaTimer.Dispose(); _mediaTimer = null; }
+        if (_stripRowH != 72) { _stripRowH = 72; RelayoutDetail(); }   // back from a node's taller recent strip
         ClearStrip();   // reserve the strip space, empty, until the deferred load
         int token = _detailsLoadToken;
         var t = new System.Windows.Forms.Timer { Interval = 500 };
@@ -1908,6 +1919,66 @@ internal sealed class MainWindow : Form
         foreach (Control c in _strip.Flow.Controls) c.Dispose();   // MediaThumb disposes its own image
         _strip.Flow.Controls.Clear();
         _strip.ResetScroll();
+    }
+
+    // ── Node "recent games" strip ─────────────────────────────────────────────
+    // Under a node's main media (platform / category / playlist / All), show the
+    // degraded box thumbs of the node's most recently PLAYED games (up to 7),
+    // slightly bigger than the game screenshot thumbs (portrait 64×92 in a 104px
+    // row). Clicking a thumb selects that game (list + details). Empty when the
+    // node has no played game yet (the row collapses back to the game height on
+    // the next game selection via ScheduleMedia).
+    private const int NodeRecentMax = 7;
+    private void PopulateNodeRecentStrip(bool show)
+    {
+        ClearStrip();
+        int wantH = 72;
+        var recent = new List<IGame>();
+        if (show)
+        {
+            recent = _current
+                .Select(g => (g, ts: Safe(() => g.LastPlayedDate) ?? DateTime.MinValue))
+                .Where(x => x.ts > DateTime.MinValue)
+                .OrderByDescending(x => x.ts)
+                .Take(NodeRecentMax)
+                .Select(x => x.g)
+                .ToList();
+            if (recent.Count > 0) wantH = 104;
+        }
+        if (_stripRowH != wantH) { _stripRowH = wantH; RelayoutDetail(); }
+        if (recent.Count == 0) return;
+
+        int token = _detailsLoadToken;   // fresh — LoadImagesAsync just bumped it
+        foreach (var g in recent)
+        {
+            var captured = g;
+            var th = new MediaThumb
+            {
+                Width = 64, Height = 92, BackColor = Panel,
+                Margin = new Padding(0, 0, 6, 0), Cursor = Cursors.Hand,
+            };
+            try { _tips.SetToolTip(th, S(Safe(() => captured.Title))); } catch { }
+            th.Click += (_, _) => { _games.SelectGame(captured, true); ShowDetails(captured); };
+            th.MouseWheel += (_, e) => _strip.WheelScroll(e.Delta);
+            _strip.Flow.Controls.Add(th);
+            var src = DetailSource(captured, "Front", () =>
+                  Safe(() => captured.FrontImagePath) is { Length: > 0 } f ? f
+                : Safe(() => captured.Box3DImagePath) is { Length: > 0 } b ? b
+                : Safe(() => captured.ScreenshotImagePath));
+            if (string.IsNullOrEmpty(src)) continue;
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                var img = LoadThumbOrFull(src, keepAlpha: false);   // degraded thumb cache
+                try
+                {
+                    if (!IsDisposed && token == _detailsLoadToken)
+                        BeginInvoke((Action)(() => { if (!th.IsDisposed && token == _detailsLoadToken) th.SetImage(img); else img?.Dispose(); }));
+                    else img?.Dispose();
+                }
+                catch { img?.Dispose(); }
+            });
+        }
+        _strip.UpdateScroll();
     }
 
     // Highlight the selected mini-thumb: a thin white border (no blue fill on the empty parts).
