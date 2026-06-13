@@ -292,6 +292,14 @@ internal static class HostBoot
 
         // ── Default: GUI (simple menu of plugin options + blank area) ───────
         Console.WriteLine("Launching GUI (close the window to exit). Web server keeps running.");
+        // LB-parity: start the LaunchBox-flagged Startup Applications (LiteBox
+        // plays the LaunchBox role). Non-fatal; skips already-running singles.
+        try
+        {
+            if (dm is Data.HostDataManagerXml hdmBoot)
+                StartupApps.LaunchAll(hdmBoot.LbSettings, Media.MediaResolver.LbRoot ?? "");
+        }
+        catch (Exception ex) { Console.WriteLine("[startupapps] " + ex.Message); }
         var ui = new Thread(() =>
         {
             try

@@ -252,7 +252,14 @@ internal sealed class MainWindow : Form
             optBtn.Enabled = false;
             optBtn.ToolTipText = "Options locked — another LiteBox instance is open (read-only)";
         }
-        optBtn.Click += (_, _) => { using var w = BuildOptionsWindow(); w.ShowDialog(this); };
+        optBtn.Click += (_, _) =>
+        {
+            using var w = BuildOptionsWindow();
+            w.ShowDialog(this);
+            // Scoped flush: the LB-settings ops go to Settings.xml right away
+            // (when safe); LiteBox INI options were already saved by ApplyFinished.
+            (_dm as HostDataManagerXml)?.FlushLbSettingsIfSafe();
+        };
         bar.Items.Add(optBtn);
 
         // Manage Emulators (full per-emulator config; read-only honours the lock).
@@ -998,6 +1005,11 @@ internal sealed class MainWindow : Form
                 () => _cfg.Get("PauseMode", "legacy"), v => _cfg.Set("PauseMode", v),
                 "legacy = LaunchBox-style native overlay. advanced = LiteBox WebView mode (not implemented yet — falls back to legacy)."),
         });
+
+        // LaunchBox GLOBAL settings (Settings.xml, write-back via the op-log +
+        // scoped flush after the window closes). Greyed out in read-only mode.
+        if (_dm is HostDataManagerXml hdm2)
+            Options.LbGlobalOptions.AddSections(w, hdm2.LbSettings, hdm2.ReadOnly);
 
         return w;
     }

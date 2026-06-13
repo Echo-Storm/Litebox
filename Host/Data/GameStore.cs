@@ -631,6 +631,15 @@ internal sealed class GameStore
         FlushOpsToXml(op => op.Entity == "Emulator" || op.Entity == "EmulatorPlatform");
     }
 
+    /// <summary>Scoped flush for the LB global settings: apply ONLY the "Settings" ops
+    /// (Settings.xml) when the options window closes — same rationale as the emulator
+    /// scoped flush (LB plugins read the XMLs directly).</summary>
+    public void FlushLbSettingsJournalIfSafe()
+    {
+        if (ReadOnly || IsLaunchBoxRunning()) return;
+        FlushOpsToXml(op => op.Entity == "Settings" || op.Entity == "StartupAppSettings" || op.Entity == "ImageTypeSettings");
+    }
+
     public static bool IsLaunchBoxRunning()
     {
         try { return Process.GetProcessesByName("LaunchBox").Length > 0 || Process.GetProcessesByName("BigBox").Length > 0; }
@@ -766,6 +775,35 @@ internal sealed class GameStore
                     }
                     if (op.OpType == "delete")
                     { var m = TLAdded(op.Entity); if (m.Remove(op.Id)) TLOrder(op.Entity).Remove(op.Id); else TLDeleted(op.Entity).Add(op.Id); continue; }
+                }
+                else if (op.Entity == "Settings" && op.OpType == "modify")
+                {
+                    // LB global settings: one flat <Settings> element in Settings.xml.
+                    // Always SET the child element (never remove — LB keeps empties).
+                    string file = SettingsFile;
+                    if (file == null || !File.Exists(file) || string.IsNullOrEmpty(op.Field)) continue;
+                    EnsureDoc(file);
+                    var snode = docs[file].Root.Element("Settings");
+                    if (snode == null) continue;
+                    var sel = snode.Element(op.Field);
+                    if (sel == null) snode.Add(new XElement(op.Field, op.Value ?? ""));
+                    else sel.Value = op.Value ?? "";
+                }
+                else if ((op.Entity == "StartupAppSettings" || op.Entity == "ImageTypeSettings") && op.OpType == "replace")
+                {
+                    // Repeatable settings collections, SIBLINGS of <Settings> under <LaunchBox>.
+                    // Whole-collection replace; each row's full field map (incl. preserved
+                    // unmodelled fields) is in the JSON.
+                    string file = SettingsFile;
+                    if (file == null || !File.Exists(file)) continue;
+                    EnsureDoc(file);
+                    var sdoc = docs[file];
+                    var order = op.Entity == "StartupAppSettings" ? _startupAppOrder : _imageTypeOrder;
+                    foreach (var el in sdoc.Root.Elements(op.Entity).ToList()) el.Remove();
+                    List<Dictionary<string, string>> recs;
+                    try { recs = JsonSerializer.Deserialize<List<Dictionary<string, string>>>(op.Value) ?? new(); } catch { recs = new(); }
+                    foreach (var rec in recs)
+                        sdoc.Root.Add(BuildElement(op.Entity, rec, order));
                 }
                 else if (op.Entity == "EmulatorPlatform" && op.OpType == "replace")
                 {
@@ -1197,6 +1235,7 @@ internal sealed class GameStore
     private string DataDir => Path.GetDirectoryName(_platformsDir);
     private string EmulatorsFile => DataDir != null ? Path.Combine(DataDir, "Emulators.xml") : null;
     private string PlatformsFile => DataDir != null ? Path.Combine(DataDir, "Platforms.xml") : null;
+    private string SettingsFile => DataDir != null ? Path.Combine(DataDir, "Settings.xml") : null;
 
     // Keyed top-level entities → (file, key child element, canonical field order for adds).
     internal static bool IsTopLevelEntity(string e) => e == "Emulator" || e == "Platform" || e == "PlatformCategory";
@@ -1229,6 +1268,10 @@ internal sealed class GameStore
         "EnableHardcoreAchievements",
     };
     private static readonly string[] _emuPlatOrder = { "Emulator", "Platform", "CommandLine", "Default", "M3uDiscLoadEnabled", "AutoExtract" };
+    // LB serializes the startup-app DTO alphabetically (verified against a real LB write).
+    private static readonly string[] _startupAppOrder = { "AllowMultipleInstances", "ApplicationPath", "CommandLine", "StartWithBigBox", "StartWithLaunchBox" };
+    // ImageTypeSettings element order (verified against the real Settings.xml).
+    private static readonly string[] _imageTypeOrder = { "ImageType", "IsDefault", "UseInAutoImports" };
     private static readonly string[] _platformAddOrder =
     {
         "Name", "NestedName", "ReleaseDate", "Developer", "Manufacturer", "Cpu", "Memory", "Graphics", "Sound",

@@ -44,10 +44,20 @@ internal sealed class HostDataManagerXml : DummyDataManager
     /// the XMLs directly (no settings API), so this keeps them on fresh emulator data.</summary>
     public void FlushEmulatorsIfSafe() { try { _store?.FlushEmulatorJournalIfSafe(); } catch { } }
 
+    /// <summary>Scoped variant for the global options window: flush ONLY the
+    /// "Settings" ops (Settings.xml).</summary>
+    public void FlushLbSettingsIfSafe() { try { _store?.FlushLbSettingsJournalIfSafe(); } catch { } }
+
+    /// <summary>LaunchBox's global settings (LB\Data\Settings.xml), lazily loaded.</summary>
+    public LbSettingsStore LbSettings => _lbSettings ??= new LbSettingsStore(_dataDir, _store);
+    private LbSettingsStore _lbSettings;
+    private readonly string _dataDir;
+
     public HostDataManagerXml(GameStore store, string dataDir, string imagesRoot)
     {
         _store = store;
         _imagesRoot = imagesRoot;
+        _dataDir = dataDir;
 
         // Game wrappers (thin) built once.
         _allGames = new List<IGame>(store.Count);

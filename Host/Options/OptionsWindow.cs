@@ -101,11 +101,14 @@ internal sealed class OptionsWindow : Form
     }
 
     /// <summary>Adds a section auto-generated from OptionItems (checkbox / textbox /
-    /// combo stack; the apply callback writes every control back through its item).</summary>
-    public void AddSection(string title, IEnumerable<OptionItem> items)
+    /// combo stack; the apply callback writes every control back through its item).
+    /// <paramref name="disabled"/> greys the whole panel (read-only mode).</summary>
+    public void AddSection(string title, IEnumerable<OptionItem> items, bool disabled = false)
     {
         var (panel, apply) = BuildAutoPanel(items);
-        AddSection(title, panel, apply);
+        Action? applyOrNull = disabled ? null : apply;
+        if (disabled) panel.Enabled = false;
+        AddSection(title, panel, applyOrNull);
     }
 
     private void ShowSection(int i)
@@ -150,15 +153,17 @@ internal sealed class OptionsWindow : Form
                 }
                 case OptionKind.Text:
                 {
-                    var lbl = new Label { Text = it.Label, Location = new Point(4, y + 3), AutoSize = true, ForeColor = Fg, BackColor = Bg };
+                    // Label ABOVE the textbox (full width) — a long label next to the
+                    // box would otherwise be overlapped by it.
+                    var lbl = new Label { Text = it.Label, Location = new Point(4, y), AutoSize = true, ForeColor = Fg, BackColor = Bg };
                     var tb = new TextBox
                     {
-                        Location = new Point(250, y), Width = 280,
+                        Location = new Point(4, y + 20), Width = 520,
                         BackColor = Panel2, ForeColor = Fg, BorderStyle = BorderStyle.FixedSingle,
                         Text = it.Get(),
                     };
                     panel.Controls.Add(lbl); panel.Controls.Add(tb);
-                    y += 30;
+                    y += 50;
                     applies.Add(() => ApplyIfChanged(it, tb.Text));
                     break;
                 }
@@ -172,14 +177,28 @@ internal sealed class OptionsWindow : Form
                         BackColor = Panel2, ForeColor = Fg, FlatStyle = FlatStyle.Flat,
                     };
                     cmb.Items.AddRange(it.Choices);
+                    // With ChoiceValues, the combo displays Choices[i] but storage speaks ChoiceValues[i].
+                    var values = it.ChoiceValues is { } cv && cv.Length == it.Choices.Length ? cv : it.Choices;
                     var cur = it.Get();
-                    int ix = Array.FindIndex(it.Choices, c => string.Equals(c, cur, StringComparison.OrdinalIgnoreCase));
+                    int ix = Array.FindIndex(values, c => string.Equals(c, cur, StringComparison.OrdinalIgnoreCase));
                     cmb.SelectedIndex = ix >= 0 ? ix : (it.Choices.Length > 0 ? 0 : -1);
                     panel.Controls.Add(lbl); panel.Controls.Add(cmb);
                     y += 30;
-                    applies.Add(() => { if (cmb.SelectedItem is string s) ApplyIfChanged(it, s); });
+                    applies.Add(() => { if (cmb.SelectedIndex >= 0 && cmb.SelectedIndex < values.Length) ApplyIfChanged(it, values[cmb.SelectedIndex]); });
                     break;
                 }
+            }
+
+            if (it.NoImpact)
+            {
+                var ni = new Label
+                {
+                    Text = "No impact on LiteBox", Location = new Point(22, y), AutoSize = true,
+                    ForeColor = Color.FromArgb(225, 95, 95), BackColor = Bg,
+                    Font = new Font("Segoe UI", 8.25f, FontStyle.Italic),
+                };
+                panel.Controls.Add(ni);
+                y += 18;
             }
 
             if (!string.IsNullOrEmpty(it.Help))

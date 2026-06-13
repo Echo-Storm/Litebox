@@ -30,7 +30,15 @@ internal sealed class OptionItem
     public string Label;
     public OptionKind Kind;
     public string? Help;
-    public string[] Choices = Array.Empty<string>();   // Choice kind
+    public string[] Choices = Array.Empty<string>();   // Choice kind (display labels)
+    /// <summary>Optional stored values parallel to <see cref="Choices"/> — when set,
+    /// the combo shows Choices[i] but Get/Set speak ChoiceValues[i] (e.g. label
+    /// "Windows Notifications" ↔ stored "1").</summary>
+    public string[]? ChoiceValues;
+    /// <summary>True for LaunchBox-only options LiteBox never reads: the window
+    /// shows a red "No impact on LiteBox" note under the control (the value still
+    /// round-trips to Settings.xml for LaunchBox's benefit).</summary>
+    public bool NoImpact;
 
     public Func<string> Get = () => "";
     public Action<string> Set = _ => { };
