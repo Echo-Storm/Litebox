@@ -209,9 +209,14 @@ internal static class HostLaunch
             if (DryRun) { Thread.Sleep(2500); return; }
             if (!StoreSupport.ShellOpen(target)) { Console.WriteLine("[store-launch] ShellOpen failed: " + target); StoreTrace.Log("store-launch ShellOpen FAILED"); return; }
             if (gi >= 0) { try { _store.JournalPlayStart(gi); } catch { } }
+            // Notify launching plugins the game is up — same as the emulator path.
+            // ExtendDB's GameLaunchHook needs this pair (OnAfterGameLaunched /
+            // OnGameExited) to tear down + REOPEN the BigBox-web kiosk around a
+            // store game; without OnGameExited the kiosk never comes back.
+            Fire(p => p.OnAfterGameLaunched(game, null, null));
             sw.Restart();
             StoreTrace.Log("store-launch ShellOpen ok — watching for game process…");
-            seen = StoreProcessWatcher.WaitForGame(installDir, regainedFocus);   // process ≥60s→exit, else wait for focus
+            seen = StoreProcessWatcher.WaitForGame(installDir, regainedFocus);   // process-under-install-dir; focus only if opted in
             StoreTrace.Log($"store-launch watch done: seen={seen} elapsed={(int)sw.Elapsed.TotalSeconds}s");
         }
         catch (Exception ex) { Console.WriteLine("[store-launch] error: " + ex.Message); StoreTrace.Log("store-launch EX: " + ex.Message); }
@@ -223,12 +228,34 @@ internal static class HostLaunch
             // Record play time only if the game process was actually observed (else the launch likely
             // failed, or we couldn't track it — don't bill the watcher's wait as play time).
             if (!DryRun && seen && gi >= 0) { try { _store.JournalPlayTime(gi, (int)sw.Elapsed.TotalSeconds); } catch { } }
-            try { GameEnded?.Invoke(game); } catch { }   // GUI hides the running screen + reloads its list
+            Fire(p => p.OnGameExited());                  // ExtendDB: reopen the kiosk (mirror RunAndWait)
+            try { GameEnded?.Invoke(game); } catch { }    // GUI hides the running screen + reloads its list
         }
     }
 
     private static void RunAndWait(IGame game, IAdditionalApplication app, IEmulator emulator, string overrideCmd)
     {
+        // Store game (GOG / Steam / Epic) launched as the game itself (no explicit
+        // additional-app): its ApplicationPath is a protocol URI / store .lnk, NOT a
+        // runnable file. Hand it to the store path (ShellExecute) instead of falling
+        // through to RunProcess — which runs it through ResolvePath (Path.Combine with
+        // the LB root) and mangles "com.epicgames.launcher://apps/…" into a bogus
+        // "<LB>\com.epicgames.launcher:\apps\…" local path that can't start. The GUI
+        // Play already calls LaunchStore directly; this makes the web/kiosk launch
+        // (ExtendDB GameLauncher → PlayGame → Launch → RunAndWait) behave the same.
+        // Launch's lifecycle (OnBeforeGameLaunching/kiosk-suspend, GameStarted,
+        // DropOptional) already ran; RunStoreAndWait owns play-time + GameEnded.
+        if (app == null)
+        {
+            var storeKind = StoreSupport.KindOf(game);
+            if (storeKind != StoreKind.None)
+            {
+                RunStoreAndWait(game, storeKind, SafeStr(() => game.ApplicationPath),
+                    StoreSupport.ResolveInstallDir(storeKind, game), null, false);
+                return;
+            }
+        }
+
         // Play tracking (our user-state → journal): a real launch bumps play count +
         // last-played now; on exit we add the elapsed seconds to play time. Skipped in DryRun.
         int gi = GameIndex(game);

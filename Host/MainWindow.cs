@@ -1010,6 +1010,11 @@ internal sealed class MainWindow : Form
             Options.OptionItem.Toggle("General", "Unload the game list while a game runs",
                 () => _cfg.UnloadListDuringGame, v => _cfg.UnloadListDuringGame = v,
                 "Frees the list's memory during the game and reloads it on exit."),
+            Options.OptionItem.Toggle("General", "Store games: use window-focus exit fallback",
+                () => _cfg.StoreExitFocusFallback, v => _cfg.StoreExitFocusFallback = v,
+                "Off (default): a GOG/Steam/Epic game's exit is detected only from its install-folder "
+                + "process — robust, works on a 2nd monitor. On: also fall back to the window-focus signal "
+                + "when no install-folder process is ever seen (older, flakier). Applies to the next launch."),
         });
 
         w.AddSection("Display", new[]
@@ -1641,7 +1646,11 @@ internal sealed class MainWindow : Form
     {
         _storeLostFocus = false;
         _storeRegainedFocus = false;
-        try { HostLaunch.LaunchStore(g, () => _storeRegainedFocus, _cfg.KillStoreLauncherAfterGame); } catch { }
+        // Exit detection: install-folder process by default. The window-focus
+        // fallback is opt-in (StoreExitFocusFallback) — pass no focus callback
+        // when it's off so the watcher relies purely on the game process.
+        Func<bool> regained = _cfg.StoreExitFocusFallback ? (() => _storeRegainedFocus) : (Func<bool>)null;
+        try { HostLaunch.LaunchStore(g, regained, _cfg.KillStoreLauncherAfterGame); } catch { }
     }
 
     private void OnActivatedStoreResync()
@@ -2334,9 +2343,13 @@ internal sealed class MainWindow : Form
     {
         if (_overlay == null)
         {
-            _overlay = new DoubleBufferedPanel { Dock = DockStyle.Fill, Cursor = Cursors.Hand };
+            _overlay = new DoubleBufferedPanel { Dock = DockStyle.Fill, Cursor = Cursors.Default };
             _overlay.Paint += PaintOverlay;
-            _overlay.Click += (_, _) => HideRunningOverlay();   // safety net: click to dismiss if it ever lingers
+            // Manual escape hatch: DOUBLE-click to dismiss if the overlay ever
+            // lingers (e.g. a game whose process can't be detected). A single
+            // click — typically just bringing LiteBox back to the foreground
+            // while the game is still running — must NOT dismiss it.
+            _overlay.DoubleClick += (_, _) => HideRunningOverlay();
             Controls.Add(_overlay);
         }
         _overlayImg?.Dispose();
@@ -3397,6 +3410,8 @@ internal sealed class MainWindow : Form
             DoubleBuffered = true;
             ResizeRedraw = true;
             SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint, true);
+            // Ensure DoubleClick is raised (the running-overlay's escape gesture).
+            SetStyle(ControlStyles.StandardClick | ControlStyles.StandardDoubleClick, true);
         }
     }
 

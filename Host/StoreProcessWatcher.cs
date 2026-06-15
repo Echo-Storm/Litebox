@@ -61,58 +61,144 @@ internal static class StoreProcessWatcher
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern IntPtr OpenProcess(int access, bool inherit, int pid);
-    [DllImport("kernel32.dll", SetLastError = true)]
+    // CharSet.Unicode is REQUIRED: this is the W (wide) variant, so the StringBuilder
+    // must be marshalled as UTF-16. Without it the default (ANSI) marshalling reads the
+    // wide buffer back as single-byte → the path collapses to its first character ("C")
+    // at the first embedded NUL, so EVERY StartsWith(installDir) check fails and no game
+    // process is ever detected.
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern bool QueryFullProcessImageNameW(IntPtr h, int flags, StringBuilder buf, ref int size);
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr h);
     private const int PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
 
-    // A store launch can route through a launcher.exe that exits immediately (handing off to the real
-    // game, or the game runs from outside installDir). So we DON'T treat a short-lived process under
-    // installDir as "the game ended": only a process that ran for a real while (≥ MinRealRunSeconds)
-    // and is then gone counts as a genuine session ending on its own. For shorter runs we wait until
-    // LiteBox is back in the foreground (regainedFocus) before declaring the game over.
-    private const int MinRealRunSeconds = 60;   // a process under installDir running this long = a real session
-    private const int GoneConfirmSeconds = 4;   // process must stay gone this long (bridges launcher→game gaps)
+    // Detection strategy (install-dir process FIRST, focus only as a backstop):
+    //   • Wait for any process whose image lives under installDir to APPEAR, then end
+    //     once they're ALL gone for GoneConfirmSeconds. No minimum run duration — a
+    //     30-second indie session ends on the process alone, and it works on a 2nd
+    //     monitor where LiteBox never lost the foreground (the old focus path failed
+    //     both). The gone-debounce bridges a launcher.exe → game handoff inside the
+    //     install folder.
+    //   • Focus is a BACKSTOP only for when NO install-dir process is ever seen
+    //     (installDir unknown/wrong, or the game truly runs outside it). We give the
+    //     store client a startup grace before trusting that signal, so clicking back
+    //     to LiteBox while Epic/Steam is still spawning the game doesn't end early.
+    private const int GoneConfirmSeconds  = 8;    // install-dir processes must stay gone this long
+    private const int FocusGraceSeconds   = 25;   // min wait before the focus backstop can fire
 
     /// <summary>Block until the store game is over. regainedFocus() should return true once LiteBox has
     /// LOST and then REGAINED the foreground since the launch (the reliable "user is back" signal).
     /// Returns true if a game process was actually observed (for play-time billing). Never hangs forever
     /// once focus is regained; otherwise the overlay's click-to-dismiss is the backstop.</summary>
+    ///
+    /// <remarks>
+    /// Scan strategy (cheap once locked on): a full <see cref="Process.GetProcesses"/> sweep is expensive,
+    /// so we only do it while HUNTING for the game's process. Once we've matched a PID under installDir we
+    /// LOCK ONTO it and each poll only re-checks THAT one PID (a single OpenProcess) — no system-wide sweep.
+    /// We resume full sweeps only if the tracked PID is lost, to catch a launcher.exe → game.exe handoff
+    /// inside the install folder (a different PID, still under installDir). If a re-sweep then finds nothing
+    /// either, the gone-debounce elapses and the game is over.
+    /// </remarks>
     public static bool WaitForGame(string? installDir, Func<bool>? regainedFocus = null)
     {
         string? dir = string.IsNullOrWhiteSpace(installDir) ? null : installDir!.TrimEnd('\\', '/') + "\\";
+        DateTime startedAt = DateTime.UtcNow;
         DateTime? firstSeen = null, lastRunningAt = null;
-        bool seenLong = false;
+        DateTime lastDiag = DateTime.MinValue; int diagCount = 0;
+        int trackedPid = -1;   // PID we're locked onto; -1 = hunting (full sweeps)
         bool Regained() { try { return regainedFocus?.Invoke() ?? false; } catch { return false; } }
 
         while (true)
         {
-            bool running = dir != null && AnyProcessUnder(dir);
+            var now = DateTime.UtcNow;
+            bool running = false;
+            if (dir != null)
+            {
+                // Locked on? Cheap single-PID check first — no full sweep while the game runs.
+                if (trackedPid != -1)
+                {
+                    if (PidStillUnder(trackedPid, dir)) running = true;
+                    else { StoreTrace.Log($"watch: tracked pid={trackedPid} gone, re-scanning"); trackedPid = -1; }
+                }
+                // Hunting (never locked, or just lost the PID): one full sweep to (re)acquire.
+                // This bridges a launcher.exe → game.exe handoff (new PID, same install folder).
+                if (trackedPid == -1)
+                {
+                    int pid = FirstPidUnder(dir);
+                    if (pid != -1) { trackedPid = pid; running = true; StoreTrace.Log($"watch: locked onto pid={pid} under install dir"); }
+                }
+            }
+
             if (running)
             {
-                var now = DateTime.UtcNow;
+                if (firstSeen == null) StoreTrace.Log("watch: game process seen under install dir");
                 firstSeen ??= now;
                 lastRunningAt = now;
-                if (!seenLong && (now - firstSeen.Value).TotalSeconds >= MinRealRunSeconds)
-                { seenLong = true; StoreTrace.Log($"watch: game running ≥{MinRealRunSeconds}s (real session)"); }
+            }
+            else if (firstSeen != null)
+            {
+                // Saw the game's process under installDir, and it's now gone (debounced).
+                // Primary, focus-independent end signal.
+                if (lastRunningAt != null && (now - lastRunningAt.Value).TotalSeconds >= GoneConfirmSeconds)
+                { StoreTrace.Log("watch: end (install-dir process gone)"); return true; }
             }
             else
             {
-                // Real session whose process is now gone (debounced to bridge a launcher→game gap):
-                // end on the process alone — works even if LiteBox kept the foreground (2nd monitor).
-                if (seenLong && lastRunningAt != null && (DateTime.UtcNow - lastRunningAt.Value).TotalSeconds >= GoneConfirmSeconds)
-                { StoreTrace.Log("watch: end (process gone after a real session)"); return true; }
-                // Short launch / launcher.exe that didn't stay, or game running outside installDir:
-                // wait until LiteBox is back in front before declaring it over.
-                if (Regained())
-                { StoreTrace.Log($"watch: end (focus regained; seenProcess={firstSeen != null})"); return firstSeen != null; }
+                // No install-dir process seen yet. Periodically dump what IS running so
+                // we can see why (game exe outside installDir, or unreadable/elevated).
+                if (diagCount < 5 && (now - lastDiag).TotalSeconds >= 8)
+                { lastDiag = now; diagCount++; DumpCandidates(installDir); }
+
+                // Fall back to focus, but only after a startup grace so we don't end
+                // while the store client is still bringing the game up.
+                if ((now - startedAt).TotalSeconds >= FocusGraceSeconds && Regained())
+                { StoreTrace.Log("watch: end (focus backstop; no install-dir process seen)"); return false; }
             }
             System.Threading.Thread.Sleep(1500);
         }
     }
 
-    private static bool AnyProcessUnder(string dirWithSep)
+    /// <summary>Diagnostic: logs why no process matched under installDir — the count of
+    /// unreadable PIDs (elevation/cross-integrity) and any readable process whose image
+    /// lives under the store ROOT (installDir's parent, e.g. "…\Epic Games"), so a real
+    /// game exe sitting in a sibling/other subfolder is visible vs. the resolved dir.</summary>
+    private static void DumpCandidates(string? installDir)
+    {
+        try
+        {
+            string? root = null;
+            try { root = string.IsNullOrWhiteSpace(installDir) ? null : System.IO.Directory.GetParent(installDir!.TrimEnd('\\', '/'))?.FullName; }
+            catch { }
+            string rootSep = root == null ? "" : root.TrimEnd('\\', '/') + "\\";
+
+            int total = 0, unreadable = 0;
+            var hits = new List<string>();
+            var procs = Process.GetProcesses();
+            try
+            {
+                foreach (var p in procs)
+                {
+                    total++;
+                    string? path = null;
+                    try { path = ImagePath(p.Id); } catch { }
+                    if (string.IsNullOrEmpty(path)) { unreadable++; continue; }
+                    if (rootSep.Length > 0 && path!.StartsWith(rootSep, StringComparison.OrdinalIgnoreCase))
+                        hits.Add(path!);
+                }
+            }
+            finally { foreach (var p in procs) { try { p.Dispose(); } catch { } } }
+
+            StoreTrace.Log($"watch-diag: waiting under '{installDir}' — {total} procs, {unreadable} unreadable, "
+                + $"{hits.Count} under store root '{root}'"
+                + (hits.Count > 0 ? ": " + string.Join(" | ", hits.GetRange(0, Math.Min(hits.Count, 6))) : ""));
+        }
+        catch (Exception ex) { StoreTrace.Log("watch-diag error: " + ex.Message); }
+    }
+
+    /// <summary>Full system sweep: returns the PID of the first process whose image lives under
+    /// <paramref name="dirWithSep"/>, or -1 if none. Expensive (enumerates every process) — only used
+    /// while hunting for the game, never once a PID is locked on.</summary>
+    private static int FirstPidUnder(string dirWithSep)
     {
         var procs = Process.GetProcesses();
         try
@@ -122,11 +208,22 @@ internal static class StoreProcessWatcher
                 string? path = null;
                 try { path = ImagePath(p.Id); } catch { }
                 if (!string.IsNullOrEmpty(path) && path!.StartsWith(dirWithSep, StringComparison.OrdinalIgnoreCase))
-                    return true;
+                    return p.Id;
             }
-            return false;
+            return -1;
         }
         finally { foreach (var p in procs) { try { p.Dispose(); } catch { } } }
+    }
+
+    /// <summary>Cheap check for a single PID: is it still alive AND still imaged under
+    /// <paramref name="dirWithSep"/>? One OpenProcess, no system-wide enumeration. A dead PID returns
+    /// null from <see cref="ImagePath"/> (handle won't open) → false. We also re-verify the path because
+    /// PIDs can be recycled to an unrelated process.</summary>
+    private static bool PidStillUnder(int pid, string dirWithSep)
+    {
+        string? path = null;
+        try { path = ImagePath(pid); } catch { }
+        return !string.IsNullOrEmpty(path) && path!.StartsWith(dirWithSep, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string? ImagePath(int pid)

@@ -72,6 +72,7 @@ internal sealed class LiteBoxConfig
         _kv["ShowGameRunningScreen"] = "true";
         _kv["UnloadListDuringGame"] = "true";
         _kv["KillStoreLauncherAfterGame"] = "false";
+        _kv["StoreExitFocusFallback"] = "false";
         _kv["UseImageCache"] = "true";
         _kv["UseGameCache"] = "true";
         _kv["UnloadGameCacheDuringGame"] = "true";
@@ -89,6 +90,11 @@ internal sealed class LiteBoxConfig
         sb.AppendLine("; KillStoreLauncherAfterGame : when a GOG/Steam game exits, close the store client");
         sb.AppendLine(";                         (GalaxyClient/Steam) ONLY IF this launch started it (a client you");
         sb.AppendLine(";                         already had open is left alone). Off by default.");
+        sb.AppendLine("; StoreExitFocusFallback: how to detect a GOG/Steam/Epic game has EXITED. Default (false)");
+        sb.AppendLine(";                         uses ONLY the game's process under its install folder — robust,");
+        sb.AppendLine(";                         works on a 2nd monitor. Set true to ALSO fall back to the window-");
+        sb.AppendLine(";                         focus signal when no install-folder process is ever seen (older,");
+        sb.AppendLine(";                         flakier; only needed if the install dir can't be resolved).");
             sb.AppendLine("; UseImageCache         : use the shared degraded-thumbnail cache for UI images");
             sb.AppendLine("; UseGameCache          : build & use an in-memory media cache (Everything-backed) when");
             sb.AppendLine(";                          ExtendDB is NOT loaded (ExtendDB's own cache is preferred when present).");
@@ -101,6 +107,7 @@ internal sealed class LiteBoxConfig
             sb.AppendLine($"ShowGameRunningScreen={_kv["ShowGameRunningScreen"]}");
             sb.AppendLine($"UnloadListDuringGame={_kv["UnloadListDuringGame"]}");
             sb.AppendLine($"KillStoreLauncherAfterGame={_kv["KillStoreLauncherAfterGame"]}");
+            sb.AppendLine($"StoreExitFocusFallback={_kv["StoreExitFocusFallback"]}");
             sb.AppendLine($"UseImageCache={_kv["UseImageCache"]}");
             sb.AppendLine($"UseGameCache={_kv["UseGameCache"]}");
             sb.AppendLine($"UnloadGameCacheDuringGame={_kv["UnloadGameCacheDuringGame"]}");
@@ -134,6 +141,9 @@ internal sealed class LiteBoxConfig
     public bool UnloadListDuringGame  { get => GetBool("UnloadListDuringGame", true); set => SetBool("UnloadListDuringGame", value); }
     // Close the GOG/Steam client after a store game exits — but only the one THIS launch started.
     public bool KillStoreLauncherAfterGame { get => GetBool("KillStoreLauncherAfterGame", false); set => SetBool("KillStoreLauncherAfterGame", value); }
+    // Store-game exit detection: false (default) = install-folder process only; true = also use the
+    // window-focus fallback when no install-folder process is ever seen (older, flakier).
+    public bool StoreExitFocusFallback { get => GetBool("StoreExitFocusFallback", false); set => SetBool("StoreExitFocusFallback", value); }
     public bool UseImageCache         { get => GetBool("UseImageCache", true); set => SetBool("UseImageCache", value); }
     public bool UseGameCache          { get => GetBool("UseGameCache", true); set => SetBool("UseGameCache", value); }
     public bool UnloadGameCacheDuringGame { get => GetBool("UnloadGameCacheDuringGame", true); set => SetBool("UnloadGameCacheDuringGame", value); }
