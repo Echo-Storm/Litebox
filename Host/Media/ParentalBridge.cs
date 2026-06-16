@@ -54,6 +54,9 @@ internal static class ParentalBridge
     private static PropertyInfo _lockedProp;   // ParentalControlManager.LaunchBoxLocked
     private static MethodInfo _showLockDialog;  // ParentalLockPopupForm.ShowFor(IWin32Window)
     private static MethodInfo _modulesOn;       // ExtendDB.Modules.On(string key)
+    private static MethodInfo _verifyPin;       // ParentalControlManager.VerifyPin(string)→bool
+    private static PropertyInfo _pinLockedOutProp; // ParentalControlManager.PinLockedOut
+    private static MethodInfo _registerFail;    // ParentalControlManager.RegisterFailedPinAttempt()→int
 
     // ── Snapshot (filled by Refresh) ──────────────────────────────────────────
     private static bool _snap;          // a snapshot has been taken at least once
@@ -98,6 +101,11 @@ internal static class ParentalBridge
             // The lock/unlock popup (with PIN gate) — same entry the parental hotkey uses in LB.
             var popup = asm.GetType("ExtendDB.ParentalLockPopupForm");
             _showLockDialog = popup?.GetMethod("ShowFor", SP, null, new[] { typeof(IWin32Window) }, null);
+
+            // PIN verify (without toggling the global lock) for the one-shot store-install gate.
+            _verifyPin = _mgrType.GetMethod("VerifyPin", SP, null, new[] { typeof(string) }, null);
+            _pinLockedOutProp = _mgrType.GetProperty("PinLockedOut", SP);
+            _registerFail = _mgrType.GetMethod("RegisterFailedPinAttempt", SP, null, Type.EmptyTypes, null);
 
             // Refresh on either lock transition (LaunchBox is the one that moves under
             // LiteBox; BigBox is hooked too, harmlessly). The events are Action-typed.
@@ -251,5 +259,73 @@ internal static class ParentalBridge
     {
         Probe();
         _showLockDialog?.Invoke(null, new object[] { owner });
+    }
+
+    /// <summary>Prompts for the PIN and verifies it to authorize ONE store install — WITHOUT
+    /// unlocking parental globally (the lock state and the list filtering are untouched, so the
+    /// catalog isn't reloaded). Returns true only on a correct PIN. Honours the shared lockout
+    /// (3 wrong PINs anywhere = locked out until restart). Cancel / wrong PIN / lockout → false.</summary>
+    public static bool VerifyInstallPin(IWin32Window owner)
+    {
+        Probe();
+        if (_verifyPin == null) return false;   // can't verify → deny (safe)
+        if (PinLockedOut())
+        {
+            try { MessageBox.Show(owner, "Locked out — too many wrong PINs. Restart required.", "LiteBox", MessageBoxButtons.OK, MessageBoxIcon.Warning); } catch { }
+            return false;
+        }
+        while (true)
+        {
+            var pin = PinPromptForm.Prompt(owner);
+            if (pin == null) return false;   // cancelled
+            bool ok = false;
+            try { ok = _verifyPin.Invoke(null, new object[] { pin }) is bool b && b; } catch { }
+            if (ok) return true;
+            int remaining = -1;
+            try { if (_registerFail != null) remaining = _registerFail.Invoke(null, null) is int r ? r : -1; } catch { }
+            if (remaining == 0)
+            {
+                try { MessageBox.Show(owner, "Locked out — restart required.", "LiteBox", MessageBoxButtons.OK, MessageBoxIcon.Warning); } catch { }
+                return false;
+            }
+            try { MessageBox.Show(owner, remaining > 0 ? ("Wrong PIN — " + remaining + " attempt(s) left.") : "Wrong PIN.", "LiteBox", MessageBoxButtons.OK, MessageBoxIcon.Warning); } catch { }
+        }
+    }
+
+    private static bool PinLockedOut()
+    {
+        try { return _pinLockedOutProp?.GetValue(null) is bool b && b; } catch { return false; }
+    }
+
+    /// <summary>Minimal modal PIN entry (masked) for the one-shot install gate. Returns the entered
+    /// PIN, or null if cancelled. Deliberately separate from ExtendDB's lock popup so it never
+    /// toggles the global parental lock.</summary>
+    private sealed class PinPromptForm : Form
+    {
+        private readonly TextBox _box;
+        private PinPromptForm()
+        {
+            Text = "Parental PIN";
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            StartPosition = FormStartPosition.CenterParent;
+            MinimizeBox = false; MaximizeBox = false; ShowInTaskbar = false;
+            ClientSize = new System.Drawing.Size(300, 112);
+            var lbl = new Label { Text = "Enter PIN to allow this install:", AutoSize = true, Left = 12, Top = 14 };
+            _box = new TextBox { Left = 12, Top = 38, Width = 276, UseSystemPasswordChar = true };
+            var ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Left = 132, Top = 72, Width = 70 };
+            var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Left = 212, Top = 72, Width = 70 };
+            AcceptButton = ok; CancelButton = cancel;
+            Controls.AddRange(new Control[] { lbl, _box, ok, cancel });
+        }
+        public static string Prompt(IWin32Window owner)
+        {
+            try
+            {
+                using var f = new PinPromptForm();
+                var res = owner != null ? f.ShowDialog(owner) : f.ShowDialog();
+                return res == DialogResult.OK ? f._box.Text : null;
+            }
+            catch { return null; }
+        }
     }
 }

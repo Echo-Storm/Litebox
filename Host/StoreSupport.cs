@@ -143,9 +143,27 @@ internal static class StoreSupport
         StoreKind.Steam when !string.IsNullOrWhiteSpace(steamAppId) => "steam://install/" + steamAppId!.Trim(),
         StoreKind.Epic when !string.IsNullOrWhiteSpace(epicAppName) => "com.epicgames.launcher://apps/" + epicAppName!.Trim() + "?action=install",
         StoreKind.Uplay when !string.IsNullOrWhiteSpace(uplayId) => "uplay://install/" + uplayId!.Trim(),
-        StoreKind.Ea when !string.IsNullOrWhiteSpace(eaId) => "ea://" + eaId!.Trim(),
+        // ea://<id> has no Windows handler — the EA app registers origin2://. Same proven form LaunchBox
+        // shell-opens; autoDownload makes the EA app download an uninstalled game first.
+        StoreKind.Ea when !string.IsNullOrWhiteSpace(eaId) => "origin2://game/launch/?offerIds=" + eaId!.Trim() + "&autoDownload=1",
         _ => null,
     };
+
+    /// <summary>The shell-openable LAUNCH target. For most stores it's the game's ApplicationPath
+    /// (a registered protocol / .lnk). EA is special: LB stores ea://{id} (LB-internal, NO Windows
+    /// protocol handler) — the real launch is the registered origin2:// scheme, exactly what LaunchBox
+    /// itself shell-opens for an installed game (NO autoDownload — that flag is only for Install, see
+    /// InstallUri).</summary>
+    public static string? LaunchTarget(StoreKind kind, IGame? game)
+    {
+        var app = game?.ApplicationPath;
+        if (kind == StoreKind.Ea)
+        {
+            var id = EaId(app);
+            return string.IsNullOrEmpty(id) ? app : "origin2://game/launch/?offerIds=" + id;
+        }
+        return app;
+    }
 
     /// <summary>Open a target via the shell (handles .lnk shortcuts and steam:// / goggalaxy:// URIs,
     /// which a plain UseShellExecute=false Process.Start cannot run).</summary>

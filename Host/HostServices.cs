@@ -182,7 +182,7 @@ internal static class HostLaunch
         if (game == null) return;
         var kind = StoreSupport.KindOf(game);
         if (kind == StoreKind.None) return;
-        string target = SafeStr(() => game.ApplicationPath);
+        string target = StoreSupport.LaunchTarget(kind, game);   // EA: ea://{id} → origin2:// (no ea:// handler)
         if (string.IsNullOrEmpty(target)) return;
         string installDir = StoreSupport.ResolveInstallDir(kind, game);
         Console.WriteLine($"[store-launch] {SafeStr(() => game.Title)} target={target} dir={installDir ?? "(unknown)"}");
@@ -258,7 +258,7 @@ internal static class HostLaunch
             var storeKind = StoreSupport.KindOf(game);
             if (storeKind != StoreKind.None)
             {
-                RunStoreAndWait(game, storeKind, SafeStr(() => game.ApplicationPath),
+                RunStoreAndWait(game, storeKind, StoreSupport.LaunchTarget(storeKind, game),
                     StoreSupport.ResolveInstallDir(storeKind, game), null, false);
                 return;
             }

@@ -410,13 +410,12 @@ internal sealed class LaunchButtons : Panel
             return;
         }
 
-        // Parental: when locked AND the BlockInstallWhenLocked option is set, gate the install
-        // behind the PIN — show the unlock dialog first and bail if the user didn't unlock.
+        // Parental: when locked AND BlockInstallWhenLocked is set, gate the install behind the PIN.
+        // One-shot — a correct PIN authorizes THIS install only; it does NOT unlock parental globally
+        // (the list stays filtered, no reload). Cancel / wrong PIN / lockout → abort the install.
         if (ParentalBridge.InstallNeedsUnlock)
         {
-            ParentalBridge.ShowLockDialog(FindForm());
-            ParentalBridge.Refresh();                        // re-read lock state after the dialog
-            if (ParentalBridge.InstallNeedsUnlock) return;   // still locked (cancel / wrong PIN) → abort
+            if (!ParentalBridge.VerifyInstallPin(FindForm())) return;
         }
 
         // Not installed → delegate the install to the store client via its URI (the client owns the download).
