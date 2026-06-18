@@ -391,7 +391,13 @@ internal static class HostLaunch
             // normalisation the plugin knows about, e.g. RetroArch core paths).
             emuCmd = EmuPlugins.NormalizeCommandLine(emulator, emuCmd ?? "", fileName);
             // ROM to pass: m3u (multi-disc) → auto-extracted file (archive) → the rom itself.
-            string rom = ResolveLaunchRomPath(game, emulator, ep, ResolvePath(targetPath), label);
+            string romAbs = ResolvePath(targetPath);
+            string rom = ResolveLaunchRomPath(game, emulator, ep, romAbs, label);
+            // Expand the LaunchBox command-line variables (%romlocation%, %romfile%, …) that
+            // LB's core (Game.PlayEmulator) resolves at launch and that integration plugins
+            // embed in their command lines — most importantly MAME's "-rompath %romlocation%".
+            // Resolved against the ORIGINAL rom path, before the ROM token is appended.
+            emuCmd = ExpandLaunchVariables(emuCmd, romAbs, fileName, game);
             args = BuildEmulatorArgs(emuCmd, rom, emulator);
             // PrepareEmulatorForLaunch: the integration plugin may rewrite the
             // final command line right before the spawn (what LB does silently).
@@ -404,7 +410,16 @@ internal static class HostLaunch
             fileName = ResolvePath(targetPath);   // direct launch (PC, TeknoParrot, scripts)
             args = cmd?.Trim() ?? "";
         }
-        Spawn(fileName, args, label, onSpawned);
+        // Honour the emulator's "Attempt to hide console" flag (LB's HideConsole). A
+        // console-subsystem emulator like MAME otherwise pops a console window that grabs
+        // the foreground, leaving the game window unfocused — CreateNoWindow suppresses it.
+        bool hideConsole = useEmu && emulator != null && SafeBool(() => emulator.HideConsole);
+        // Startup screen yields the foreground to the emulator we're about to spawn: the
+        // "NOW LOADING…" overlay drops its always-on-top + focus-stealing so the emulator
+        // window comes up focused on top of it (the overlay stays visible until its timer
+        // closes it). Main emulator launch only — not autorun helpers.
+        if (label == "main") Gameplay.GameScreens.ReleaseStartupTopFront();
+        Spawn(fileName, args, label, onSpawned, hideConsole);
     }
 
     /// <summary>The EmulatorPlatform matching the game's platform, else the emulator's default platform.</summary>
@@ -432,6 +447,55 @@ internal static class HostLaunch
         if (!noQuotes) token = "\"" + token + "\"";
         emuCmd = emuCmd?.Trim() ?? "";
         return emuCmd.Length == 0 ? token : emuCmd + (noSpace ? "" : " ") + token;
+    }
+
+    /// <summary>Expands the LaunchBox emulator command-line variables that LB's core resolves at launch
+    /// (Game.PlayEmulator) and that integration plugins embed in their command lines — most importantly
+    /// MAME's "-rompath %romlocation%". Tokens are matched case-insensitively (LB parity); unknown
+    /// %tokens% are left untouched. Resolved against the ORIGINAL ROM path (not an extracted/m3u file),
+    /// mirroring LB. Values containing spaces are auto-quoted unless the template already quotes them.
+    ///   %romfile%      → full absolute path of the ROM
+    ///   %romlocation%  → directory containing the ROM
+    ///   %romfilename%  → ROM file name with extension (no path)
+    ///   %romname%      → ROM file name without extension
+    ///   %emulatorpath% → directory of the emulator executable
+    ///   %platform%     → the game's platform name
+    /// </summary>
+    private static string ExpandLaunchVariables(string cmd, string romAbs, string emulatorExe, IGame game)
+    {
+        if (string.IsNullOrEmpty(cmd) || cmd.IndexOf('%') < 0) return cmd ?? "";
+        var vars = new (string name, string value)[]
+        {
+            ("romlocation",  SafeStr(() => Path.GetDirectoryName(romAbs)) ?? ""),
+            ("romfilename",  SafeStr(() => Path.GetFileName(romAbs)) ?? ""),
+            ("romname",      SafeStr(() => Path.GetFileNameWithoutExtension(romAbs)) ?? ""),
+            ("romfile",      romAbs ?? ""),
+            ("emulatorpath", SafeStr(() => Path.GetDirectoryName(emulatorExe)) ?? ""),
+            ("platform",     SafeStr(() => game?.Platform) ?? ""),
+        };
+        foreach (var (name, value) in vars)
+            cmd = ReplaceTokenCI(cmd, "%" + name + "%", value);
+        return cmd;
+    }
+
+    /// <summary>Case-insensitive replace of every <paramref name="token"/> in <paramref name="s"/>. The
+    /// inserted value is wrapped in quotes when it contains a space, unless the template already wraps the
+    /// token in quotes (LB's auto-quoting behaviour). Advances past inserted text so a value that itself
+    /// contains a '%' is never re-scanned.</summary>
+    private static string ReplaceTokenCI(string s, string token, string value)
+    {
+        int i = 0;
+        while ((i = s.IndexOf(token, i, StringComparison.OrdinalIgnoreCase)) >= 0)
+        {
+            bool alreadyQuoted = i > 0 && s[i - 1] == '"'
+                                 && i + token.Length < s.Length && s[i + token.Length] == '"';
+            bool needQuotes = !alreadyQuoted && value.IndexOf(' ') >= 0
+                              && !(value.Length >= 2 && value[0] == '"' && value[value.Length - 1] == '"');
+            string ins = needQuotes ? "\"" + value + "\"" : value;
+            s = s.Substring(0, i) + ins + s.Substring(i + token.Length);
+            i += ins.Length;
+        }
+        return s;
     }
 
     /// <summary>Resolves the ROM path actually passed to the emulator: an auto-generated .m3u for a
@@ -744,7 +808,7 @@ internal static class HostLaunch
     }
 
     /// <summary>Spawns a process (or logs it in DryRun) and waits for exit.</summary>
-    private static void Spawn(string fileName, string args, string label, Action<Process> onSpawned = null)
+    private static void Spawn(string fileName, string args, string label, Action<Process> onSpawned = null, bool hideConsole = false)
     {
         if (string.IsNullOrEmpty(fileName)) return;
         if (DryRun) { Console.WriteLine($"[launch/dry] {label}: \"{fileName}\" {args}"); return; }
@@ -757,6 +821,7 @@ internal static class HostLaunch
                 FileName = fileName,
                 Arguments = args,
                 UseShellExecute = false,
+                CreateNoWindow = hideConsole,   // LB's "Attempt to hide console" — suppress the child console window
                 WorkingDirectory = SafeDir(fileName) ?? _lbRoot ?? AppContext.BaseDirectory,
             };
             using var proc = Process.Start(psi);

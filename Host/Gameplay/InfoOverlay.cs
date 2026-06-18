@@ -87,18 +87,38 @@ internal sealed class InfoOverlay : Form
         e.Graphics.DrawString(_banner, f, br, new RectangleF(0, bandY, ClientSize.Width, bandH), sf);
     }
 
-    /// <summary>Re-assert the foreground only while it is actually lost (no per-tick flicker).</summary>
+    private System.Windows.Forms.Timer? _frontTimer;
+    private bool _frontYielded;
+
+    /// <summary>Re-assert the foreground only while it is actually lost (no per-tick flicker).
+    /// Cancellable via <see cref="ReleaseTopFront"/> so the startup screen can hand the
+    /// foreground to the emulator the moment it spawns.</summary>
     public void ForceToFront(int attempts)
     {
+        if (_frontYielded) return;
         try { Activate(); SetForegroundWindow(Handle); } catch { }
         int n = 0;
-        var t = new System.Windows.Forms.Timer { Interval = 300 };
-        t.Tick += (_, _) =>
+        try { _frontTimer?.Stop(); _frontTimer?.Dispose(); } catch { }
+        _frontTimer = new System.Windows.Forms.Timer { Interval = 300 };
+        _frontTimer.Tick += (_, _) =>
         {
-            if (IsDisposed || !Visible || n++ >= attempts) { t.Stop(); t.Dispose(); return; }
+            if (_frontYielded || IsDisposed || !Visible || n++ >= attempts)
+            { try { _frontTimer?.Stop(); _frontTimer?.Dispose(); } catch { } _frontTimer = null; return; }
             try { if (GetForegroundWindow() != Handle) { Activate(); SetForegroundWindow(Handle); } } catch { }
         };
-        t.Start();
+        _frontTimer.Start();
+    }
+
+    /// <summary>Drop the always-on-top state and stop re-asserting the foreground, so the
+    /// emulator window can come forward and keep focus. The overlay stays visible (it simply
+    /// no longer floats above nor steals focus) until it is closed on its own timer. Must be
+    /// called on the overlay's UI thread.</summary>
+    public void ReleaseTopFront()
+    {
+        _frontYielded = true;
+        try { _frontTimer?.Stop(); _frontTimer?.Dispose(); } catch { }
+        _frontTimer = null;
+        try { TopMost = false; } catch { }
     }
 
     protected override void Dispose(bool disposing)

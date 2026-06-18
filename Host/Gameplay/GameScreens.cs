@@ -83,6 +83,15 @@ internal static class GameScreens
         UiThread.Invoke(() => { lock (_lock) CloseLocked(); });
     }
 
+    /// <summary>Hand the foreground to the emulator about to spawn: the startup overlay drops
+    /// its always-on-top + foreground-stealing so the emulator window can take and keep focus.
+    /// The overlay stays on screen (covering the desktop during load) until its timer closes it.
+    /// No-op when no overlay is up. Call right before spawning the emulator.</summary>
+    public static void ReleaseStartupTopFront()
+    {
+        UiThread.Invoke(() => { lock (_lock) { try { _overlay?.ReleaseTopFront(); } catch { } } });
+    }
+
     public static void Close()
     {
         UiThread.Invoke(() => { lock (_lock) CloseLocked(); });
