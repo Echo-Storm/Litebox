@@ -21,9 +21,14 @@ internal sealed class HostGame : DummyGame, ILiteBoxGame
     public HostGame(GameStore s, int i) { _s = s; _i = i; }
 
     // ── ILiteBoxGame: generic access to EVERY <Game> field, incl. those IGame doesn't expose ──
-    // GogAppId is a modelled store field (not in the sparse _extra), so serve it from the row.
+    // GogAppId and RetroAchievementsHash are modelled store/debug fields (their own typed cell, NOT
+    // in the sparse _extra), so serve them from the row — else GetField would read empty even though
+    // SetField wrote them (SetGameField routes modelled → typed cell). All other non-IGame fields
+    // (Origin*/Android*/Missing*/RetroAchievementsId/…) live in _extra and fall through below.
     public string GetField(string xmlElementName) =>
-        xmlElementName == "GogAppId" ? _s.Str(R.GogAppIdIdx) : _s.GetExtraField(R.Id, xmlElementName);
+        xmlElementName == "GogAppId"              ? _s.Str(R.GogAppIdIdx) :
+        xmlElementName == "RetroAchievementsHash" ? _s.Str(R.RaHashIdx)   :
+        _s.GetExtraField(R.Id, xmlElementName);
     public void SetField(string xmlElementName, string value)
     {
         if (string.IsNullOrEmpty(xmlElementName)) return;
