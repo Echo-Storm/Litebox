@@ -64,12 +64,26 @@ internal sealed class MainWindow : Form
     private ListView _poster;
     private ToolStripButton _posterBtn;
     private bool _posterMode;
-    private ImageList _posterGeom;                 // empty; only its ImageSize drives the tile geometry
-    private int _posterHot = -1;                   // hovered tile index (for the hover grow)
     private readonly Dictionary<Guid, Image> _posterBmp = new();   // decoded box thumbs (visible-ish)
     private readonly Queue<Guid> _posterBmpOrder = new();          // FIFO eviction order
-    // Fully composited tile (box image + title + developer text, baked once) — at paint time the grid
-    // just BLITS this instead of re-rendering text+image per tile per frame (which froze a held scroll).
+    // Native image-list slot pool: each game's fully composited tile (box + title + developer, baked
+    // once) lives in a Win32 HIMAGELIST and is drawn by the NATIVE control during scroll — no managed
+    // per-tile paint at all (that owner-draw repaint storm is what froze a held scroll). Slots recycle
+    // LRU so memory stays bounded; a tile is (re)built only when its item is retrieved or its thumb
+    // finishes loading, never per frame.
+    private IntPtr _himl;                                           // native HIMAGELIST (ILC_COLOR32)
+    private readonly Dictionary<Guid, int> _slotOf = new();         // game id -> imagelist slot
+    private readonly List<Guid> _slotId = new();                    // slot -> game id (for LRU eviction)
+    private int _slotCount;                                         // slots populated so far (<= cap)
+    private readonly LinkedList<int> _slotLru = new();              // front = MRU, back = LRU
+    private readonly Dictionary<int, LinkedListNode<int>> _slotNode = new();
+    private const int PosterSlotCap = 1024;                         // recycled slots (>> on-screen tiles)
+    // Legacy owner-draw renderer (opt-in via PosterOwnerDraw; needs a restart to switch). Kept as an
+    // alternative to the native image list: it owner-draws each tile (custom rounded selection + hover
+    // grow) but repaints managed per tile, so a held scroll in a huge view can stutter.
+    private bool _posterOwnerDraw;
+    private ImageList _posterGeom;                                  // empty; only its ImageSize drives the tile geometry
+    private int _posterHot = -1;                                    // hovered tile index (for the hover grow)
     private readonly Dictionary<Guid, IntPtr> _posterTileHbm = new();   // GDI HBITMAP per composited tile (fast BitBlt)
     private readonly Queue<Guid> _posterTileOrder = new();
     private SolidBrush _panelBrush;                                 // cached bg brush (no per-tile alloc)
@@ -80,7 +94,7 @@ internal sealed class MainWindow : Form
     // completions flooded — and froze — the UI thread until the key was released.
     private readonly LinkedList<(IGame g, Guid id)> _posterReq = new();  // pending requests (front = newest)
     private readonly HashSet<Guid> _posterPending = new();               // queued/loading/awaiting-apply (dedup)
-    private readonly Queue<(Guid id, Image img)> _posterDone = new();    // loaded, awaiting batched apply
+    private readonly Queue<(IGame g, Guid id, Image img)> _posterDone = new();   // loaded, awaiting batched apply
     private readonly object _posterQLock = new();                        // guards _posterReq/_posterPending/_posterDone/workers
     private int _posterActiveWorkers;
     private bool _posterDrainPending;              // coalesces the batched apply+invalidate
@@ -170,6 +184,7 @@ internal sealed class MainWindow : Form
         _cfg = LiteBoxConfig.LoadForExe();
         _secondInstance = InstanceGuard.AnotherInstanceRunning;
         _useImageCache = _cfg.UseImageCache;
+        _posterOwnerDraw = _cfg.GetBool("PosterOwnerDraw", false);   // legacy poster renderer (vs native image list)
         _metaExpanded = _cfg.GetBool("MetaExpanded", false);
         _vndbExpanded = _cfg.GetBool("VndbExpanded", false);
         Text = _secondInstance
@@ -1135,6 +1150,12 @@ internal sealed class MainWindow : Form
             Options.OptionItem.Toggle("Display", "Use the image cache (degraded thumbnails)",
                 () => _cfg.UseImageCache, v => _cfg.UseImageCache = v,
                 applyLive: () => _useImageCache = _cfg.UseImageCache),
+            Options.OptionItem.Toggle("Display", "Poster grid: legacy owner-draw rendering (needs restart)",
+                () => _cfg.GetBool("PosterOwnerDraw", false), v => _cfg.SetBool("PosterOwnerDraw", v),
+                "Off (default): the poster grid uses a native image list — the control scrolls and draws the "
+                + "tiles itself, so a held arrow key stays smooth even in huge views. On: the previous owner-draw "
+                + "renderer (custom rounded selection + hover grow, but can stutter on a long held scroll). "
+                + "Takes effect after restarting LiteBox."),
             Options.OptionItem.Toggle("Display", "Use game cache (when ExtendDB absent)",
                 () => _cfg.UseGameCache, v => _cfg.UseGameCache = v,
                 "Builds an in-memory media cache (Everything-backed) when the ExtendDB plugin isn't loaded.",
@@ -1500,34 +1521,56 @@ internal sealed class MainWindow : Form
     }
 
     // ── Poster (grid) view ────────────────────────────────────────────────────
-    // A native virtual ListView in LargeIcon view, owner-drawn. It mirrors the OLV's displayed
-    // (sorted + filtered) order via GetModelObject(i)/GetItemCount(), so selection, sorting and
-    // filtering stay driven by the list. Box-art tiles are drawn "contain" (aspect kept), missing
-    // art shows a grey phantom rectangle (like LaunchBox desktop), and the hovered/selected tile
-    // grows slightly. Thumbs come from the shared cache, loaded lazily off the UI thread.
+    // A native virtual ListView in LargeIcon view. Each game's tile (box-art "contain" + title +
+    // developer, or a grey phantom for missing art) is composited ONCE into a Win32 image list and the
+    // NATIVE control renders + scrolls it — no managed per-tile paint, so a held scroll stays smooth.
+    // Tiles are built lazily on item retrieval / thumb load; image-list slots recycle LRU.
     private ListView BuildPoster()
     {
-        _posterGeom = new ImageList { ColorDepth = ColorDepth.Depth32Bit, ImageSize = new Size(PCellW, PImgH + PLabelH) };
+        bool od = _posterOwnerDraw;
+        if (od) _posterGeom = new ImageList { ColorDepth = ColorDepth.Depth32Bit, ImageSize = new Size(PCellW, PImgH + PLabelH) };
+        else _himl = ImageList_Create(PCellW, PImgH + PLabelH, ILC_COLOR32, 0, 64);
         var lv = new ListView
         {
             // NOT docked: LayoutPoster gives it a left margin of (leftover/2) and extends it to the
             // panel's right edge — so icons (left-aligned) start at the centred position, the empty
             // slack falls on the right, and the vertical scrollbar stays at the right edge.
-            Dock = DockStyle.None, View = View.LargeIcon, VirtualMode = true, OwnerDraw = true,
+            Dock = DockStyle.None, View = View.LargeIcon, VirtualMode = true, OwnerDraw = od,
             BackColor = Panel, ForeColor = Fg, BorderStyle = BorderStyle.None, MultiSelect = false,
-            Visible = false, LargeImageList = _posterGeom, HideSelection = false, Scrollable = true,
+            Visible = false, HideSelection = false, Scrollable = true,
+            LargeImageList = od ? _posterGeom : null,
         };
-        lv.RetrieveVirtualItem += (_, e) => e.Item = new ListViewItem("");
-        lv.DrawItem += DrawPosterItem;
+        if (od)
+        {
+            lv.RetrieveVirtualItem += (_, e) => e.Item = new ListViewItem("");   // data comes from DrawPosterItem
+            lv.DrawItem += DrawPosterItem;
+            lv.MouseMove += OnPosterMouseMove;
+            lv.MouseLeave += (_, _) => { if (_posterHot != -1) { int o = _posterHot; _posterHot = -1; InvalidatePosterItem(o); } };
+        }
+        else
+        {
+            lv.RetrieveVirtualItem += OnPosterRetrieveItem;   // native: each item carries its image-list slot
+        }
         lv.SearchForVirtualItem += OnTypeAheadSearch;   // type-to-jump (compare-name prefix)
         lv.SelectedIndexChanged += (_, _) => OnPosterSelectionChanged();
         lv.ItemActivate += (_, _) => LaunchSelected();
         lv.MouseUp += OnPosterMouseUp;   // right-click → same game context menu as the list
-        lv.MouseMove += OnPosterMouseMove;
-        lv.MouseLeave += (_, _) => { if (_posterHot != -1) { int o = _posterHot; _posterHot = -1; InvalidatePosterItem(o); } };
-        lv.HandleCreated += (_, _) => { SetIconSpacing(lv, PCellW + PGap, PImgH + PLabelH + PGap); EnableListViewDoubleBuffer(lv); };
-        lv.CacheVirtualItems += (_, _) => { };
+        lv.HandleCreated += (_, _) =>
+        {
+            if (!od) SendMessage(lv.Handle, LVM_SETIMAGELIST, (IntPtr)LVSIL_NORMAL, _himl);   // our native list (WinForms left null)
+            SetIconSpacing(lv, PCellW + PGap, PImgH + PLabelH + PGap);
+            EnableListViewDoubleBuffer(lv);
+        };
         return lv;
+    }
+
+    // Provide the (virtual) item: just an image-list slot — the composited tile carries box + text.
+    private void OnPosterRetrieveItem(object sender, RetrieveVirtualItemEventArgs e)
+    {
+        int slot = -1;
+        var model = PosterModel(e.ItemIndex);
+        if (model != null && Guid.TryParse(S(Safe(() => model.Id)), out var id)) slot = SlotFor(model, id);
+        e.Item = new ListViewItem("") { ImageIndex = slot };
     }
 
     private IGame PosterModel(int displayIndex)
@@ -1540,7 +1583,16 @@ internal sealed class MainWindow : Form
     {
         if (_poster == null) return;
         int n = 0; try { n = _games.VisibleGames.Count; } catch { }
-        try { if (_poster.VirtualListSize != n) _poster.VirtualListSize = n; } catch { }
+        try
+        {
+            // Native mode: drop the virtual item cache. A re-sort/filter changes which game sits at each
+            // index, so the control must re-request each item's ImageIndex (slots are keyed by game id,
+            // not by index). Reassigning VirtualListSize invalidates that cache (toggle via 0 when the
+            // count is unchanged). Owner-draw reads the model per paint, so it just needs the count.
+            if (!_posterOwnerDraw && _poster.VirtualListSize == n && n > 0) _poster.VirtualListSize = 0;
+            if (_poster.VirtualListSize != n) _poster.VirtualListSize = n;
+        }
+        catch { }
         LayoutPoster();   // item count changed → vertical scrollbar may toggle → re-layout
         _poster.Invalidate();
     }
@@ -1613,93 +1665,77 @@ internal sealed class MainWindow : Form
         if (menu.Items.Count > 0) menu.Show(_poster, e.Location);
     }
 
-    private void OnPosterMouseMove(object sender, MouseEventArgs e)
-    {
-        int idx = _poster.GetItemAt(e.X, e.Y)?.Index ?? -1;
-        if (idx != _posterHot)
-        {
-            int old = _posterHot; _posterHot = idx;
-            InvalidatePosterItem(old); InvalidatePosterItem(idx);
-        }
-    }
-
-    private void InvalidatePosterItem(int index)
-    {
-        if (index < 0 || _poster == null || !_poster.Visible) return;
-        try { if (index < _poster.VirtualListSize) _poster.RedrawItems(index, index, false); } catch { }
-    }
-
-    private void DrawPosterItem(object sender, DrawListViewItemEventArgs e)
-    {
-        var g = e.Graphics; var b = e.Bounds;
-        _panelBrush ??= new SolidBrush(Panel);
-        g.FillRectangle(_panelBrush, b);                  // gaps around the tile
-        var model = PosterModel(e.ItemIndex);
-        if (model == null) return;
-        if (!Guid.TryParse(S(Safe(() => model.Id)), out var id)) return;
-
-        bool selected = e.Item != null && e.Item.Selected;
-        bool hot = e.ItemIndex == _posterHot;
-        int cellX = b.X + (b.Width - PCellW) / 2;
-        int cellTop = b.Y + 4;
-
-        // The whole tile (image + text) is composited ONCE and cached; the hot path is just a blit.
-        IntPtr hbm = GetPosterTileHbm(model, id);
-        int th = PImgH + PLabelH;
-        if (selected || hot)
-        {
-            var cardRect = new Rectangle(cellX - 6, cellTop - 4, PCellW + 12, th + 8);
-            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            using (var hl = new SolidBrush(Color.FromArgb(selected ? 26 : 12, 255, 255, 255)))
-            using (var path = RoundRect(cardRect, 8))
-                g.FillPath(hl, path);
-            if (hbm != IntPtr.Zero)   // grow the selected/hot tile 1.045× (StretchBlt, one tile)
-            {
-                int sw = (int)(PCellW * 1.045f), sh = (int)(th * 1.045f);
-                BlitTile(g, hbm, cellX + (PCellW - sw) / 2, cellTop + (th - sh) / 2, sw, sh);
-            }
-        }
-        else if (hbm != IntPtr.Zero)
-        {
-            BlitTile(g, hbm, cellX, cellTop, PCellW, th);   // fast native 1:1 copy — the hot path
-        }
-    }
-
-    // ── GDI BitBlt: copying a prepared tile via GDI is ~10× faster than GDI+ DrawImage (~100µs/tile),
-    // which was saturating the UI thread during a held poster scroll. ──────────
-    [System.Runtime.InteropServices.DllImport("gdi32.dll")] private static extern IntPtr CreateCompatibleDC(IntPtr hdc);
-    [System.Runtime.InteropServices.DllImport("gdi32.dll")] private static extern IntPtr SelectObject(IntPtr hdc, IntPtr hgdiobj);
+    // ── Native image list (comctl32): the control draws + scrolls the tiles itself; we only build each
+    // tile bitmap once and hand its slot to the control. ImageList_Replace updates one slot IN PLACE (no
+    // handle recreate), unlike the WinForms ImageList. ──────────
+    [System.Runtime.InteropServices.DllImport("comctl32.dll")] private static extern IntPtr ImageList_Create(int cx, int cy, int flags, int cInitial, int cGrow);
+    [System.Runtime.InteropServices.DllImport("comctl32.dll")] private static extern int ImageList_Add(IntPtr himl, IntPtr hbmImage, IntPtr hbmMask);
+    [System.Runtime.InteropServices.DllImport("comctl32.dll")] private static extern bool ImageList_Replace(IntPtr himl, int i, IntPtr hbmImage, IntPtr hbmMask);
+    [System.Runtime.InteropServices.DllImport("comctl32.dll")] private static extern bool ImageList_Destroy(IntPtr himl);
     [System.Runtime.InteropServices.DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr hgdiobj);
-    [System.Runtime.InteropServices.DllImport("gdi32.dll")] private static extern bool DeleteDC(IntPtr hdc);
-    [System.Runtime.InteropServices.DllImport("gdi32.dll")] private static extern bool BitBlt(IntPtr hdc, int x, int y, int cx, int cy, IntPtr hdcSrc, int x1, int y1, int rop);
-    [System.Runtime.InteropServices.DllImport("gdi32.dll")] private static extern bool StretchBlt(IntPtr hdc, int x, int y, int cx, int cy, IntPtr hdcSrc, int x1, int y1, int cx1, int cy1, int rop);
-    [System.Runtime.InteropServices.DllImport("gdi32.dll")] private static extern int SetStretchBltMode(IntPtr hdc, int mode);
-    private const int SRCCOPY = 0x00CC0020, HALFTONE = 4;
+    private const int ILC_COLOR32 = 0x20, LVM_SETIMAGELIST = 0x1000 + 3, LVSIL_NORMAL = 0;
 
-    private void BlitTile(Graphics g, IntPtr hbm, int x, int y, int w, int h)
+    // The image-list slot for a game, building + interning its tile on first use (slots recycle LRU).
+    private int SlotFor(IGame model, Guid id)
     {
-        if (_posterMemDC == IntPtr.Zero) _posterMemDC = CreateCompatibleDC(IntPtr.Zero);
-        IntPtr hdc = g.GetHdc();
-        try
+        if (_slotOf.TryGetValue(id, out int slot)) { TouchSlot(slot); return slot; }
+        IntPtr hbm = BuildTileHbm(model, id);
+        if (hbm == IntPtr.Zero) return -1;
+        if (_slotCount < PosterSlotCap)
         {
-            IntPtr oldObj = SelectObject(_posterMemDC, hbm);
-            if (w == PCellW && h == PImgH + PLabelH) BitBlt(hdc, x, y, w, h, _posterMemDC, 0, 0, SRCCOPY);
-            else { SetStretchBltMode(hdc, HALFTONE); StretchBlt(hdc, x, y, w, h, _posterMemDC, 0, 0, PCellW, PImgH + PLabelH, SRCCOPY); }
-            SelectObject(_posterMemDC, oldObj);
+            slot = ImageList_Add(_himl, hbm, IntPtr.Zero);
+            DeleteObject(hbm);
+            if (slot < 0) return -1;
+            _slotId.Add(id);                 // slot == _slotId.Count - 1
+            _slotCount = _slotId.Count;
         }
-        finally { g.ReleaseHdc(hdc); }
+        else
+        {
+            slot = EvictLru();               // far from the on-screen window (cap >> visible) → safe to reuse
+            ImageList_Replace(_himl, slot, hbm, IntPtr.Zero);
+            DeleteObject(hbm);
+            _slotOf.Remove(_slotId[slot]);
+            _slotId[slot] = id;
+        }
+        _slotOf[id] = slot;
+        TouchSlot(slot);
+        return slot;
     }
 
-    // Composite a tile (box image or phantom + title + developer) into a GDI bitmap ONCE; painted by
-    // BitBlt. Rebuilt only when the box thumb arrives (DrainPosterDone drops the stale tile). Returns
-    // the cached HBITMAP (IntPtr.Zero on failure).
-    private IntPtr GetPosterTileHbm(IGame model, Guid id)
+    private void TouchSlot(int slot)
     {
-        if (_posterTileHbm.TryGetValue(id, out var cachedHbm)) return cachedHbm;
+        if (_slotNode.TryGetValue(slot, out var node)) _slotLru.Remove(node);
+        _slotNode[slot] = _slotLru.AddFirst(slot);   // front = most-recently used
+    }
+
+    private int EvictLru()
+    {
+        int slot = _slotLru.Last.Value;              // back = least-recently used
+        _slotLru.RemoveLast();
+        _slotNode.Remove(slot);
+        return slot;
+    }
+
+    // Rebuild + replace a game's tile after its thumb finished loading (no-op if it has no live slot).
+    private void RefreshSlot(IGame model, Guid id)
+    {
+        if (model == null || !_slotOf.TryGetValue(id, out int slot)) return;
+        IntPtr hbm = BuildTileHbm(model, id);
+        if (hbm == IntPtr.Zero) return;
+        ImageList_Replace(_himl, slot, hbm, IntPtr.Zero);
+        DeleteObject(hbm);
+    }
+
+    // Composite a tile (box image or phantom + title + developer) into a 24bpp GDI bitmap and return its
+    // HBITMAP (IntPtr.Zero on failure). 24bpp = no alpha channel, so GDI text renders opaque (a 32bpp
+    // ARGB tile would lose the text pixels' alpha and the image list would draw them transparent). The
+    // caller adds/replaces it into the image list, then frees the HBITMAP (the list keeps its own copy).
+    private IntPtr BuildTileHbm(IGame model, Guid id)
+    {
         IntPtr hbm = IntPtr.Zero;
         try
         {
-            using var tile = new Bitmap(PCellW, PImgH + PLabelH);   // opaque (cleared to Panel) → GDI text renders fine
+            using var tile = new Bitmap(PCellW, PImgH + PLabelH, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
             using (var tg = Graphics.FromImage(tile))
             {
                 tg.Clear(Panel);
@@ -1731,9 +1767,77 @@ internal sealed class MainWindow : Form
                     TextRenderer.DrawText(tg, dev, Font, dRect, SubFg,
                         TextFormatFlags.HorizontalCenter | TextFormatFlags.Top | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
             }
-            hbm = tile.GetHbitmap();   // GDI copy for BitBlt (must DeleteObject on evict)
+            hbm = tile.GetHbitmap();
         }
         catch { }
+        return hbm;
+    }
+
+    // ── Legacy owner-draw renderer (opt-in) ───────────────────────────────────
+    // GDI BitBlt: copying a prepared tile via GDI is ~10× faster than GDI+ DrawImage. (DeleteObject is
+    // declared in the native block above.)
+    [System.Runtime.InteropServices.DllImport("gdi32.dll")] private static extern IntPtr CreateCompatibleDC(IntPtr hdc);
+    [System.Runtime.InteropServices.DllImport("gdi32.dll")] private static extern IntPtr SelectObject(IntPtr hdc, IntPtr hgdiobj);
+    [System.Runtime.InteropServices.DllImport("gdi32.dll")] private static extern bool BitBlt(IntPtr hdc, int x, int y, int cx, int cy, IntPtr hdcSrc, int x1, int y1, int rop);
+    [System.Runtime.InteropServices.DllImport("gdi32.dll")] private static extern bool StretchBlt(IntPtr hdc, int x, int y, int cx, int cy, IntPtr hdcSrc, int x1, int y1, int cx1, int cy1, int rop);
+    [System.Runtime.InteropServices.DllImport("gdi32.dll")] private static extern int SetStretchBltMode(IntPtr hdc, int mode);
+    private const int SRCCOPY = 0x00CC0020, HALFTONE = 4;
+
+    private void DrawPosterItem(object sender, DrawListViewItemEventArgs e)
+    {
+        var g = e.Graphics; var b = e.Bounds;
+        _panelBrush ??= new SolidBrush(Panel);
+        g.FillRectangle(_panelBrush, b);                  // gaps around the tile
+        var model = PosterModel(e.ItemIndex);
+        if (model == null) return;
+        if (!Guid.TryParse(S(Safe(() => model.Id)), out var id)) return;
+
+        bool selected = e.Item != null && e.Item.Selected;
+        bool hot = e.ItemIndex == _posterHot;
+        int cellX = b.X + (b.Width - PCellW) / 2;
+        int cellTop = b.Y + 4;
+
+        IntPtr hbm = GetPosterTileHbm(model, id);   // composited ONCE + cached; the hot path is just a blit
+        int th = PImgH + PLabelH;
+        if (selected || hot)
+        {
+            var cardRect = new Rectangle(cellX - 6, cellTop - 4, PCellW + 12, th + 8);
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            using (var hl = new SolidBrush(Color.FromArgb(selected ? 26 : 12, 255, 255, 255)))
+            using (var path = RoundRect(cardRect, 8))
+                g.FillPath(hl, path);
+            if (hbm != IntPtr.Zero)   // grow the selected/hot tile 1.045× (StretchBlt, one tile)
+            {
+                int sw = (int)(PCellW * 1.045f), sh = (int)(th * 1.045f);
+                BlitTile(g, hbm, cellX + (PCellW - sw) / 2, cellTop + (th - sh) / 2, sw, sh);
+            }
+        }
+        else if (hbm != IntPtr.Zero)
+        {
+            BlitTile(g, hbm, cellX, cellTop, PCellW, th);   // fast native 1:1 copy — the hot path
+        }
+    }
+
+    private void BlitTile(Graphics g, IntPtr hbm, int x, int y, int w, int h)
+    {
+        if (_posterMemDC == IntPtr.Zero) _posterMemDC = CreateCompatibleDC(IntPtr.Zero);
+        IntPtr hdc = g.GetHdc();
+        try
+        {
+            IntPtr oldObj = SelectObject(_posterMemDC, hbm);
+            if (w == PCellW && h == PImgH + PLabelH) BitBlt(hdc, x, y, w, h, _posterMemDC, 0, 0, SRCCOPY);
+            else { SetStretchBltMode(hdc, HALFTONE); StretchBlt(hdc, x, y, w, h, _posterMemDC, 0, 0, PCellW, PImgH + PLabelH, SRCCOPY); }
+            SelectObject(_posterMemDC, oldObj);
+        }
+        finally { g.ReleaseHdc(hdc); }
+    }
+
+    // Composite a tile into a 32bpp GDI bitmap ONCE; painted by BitBlt. Cached by id; rebuilt when the
+    // box thumb arrives (DrainPosterDone drops the stale tile). Returns the cached HBITMAP (Zero on fail).
+    private IntPtr GetPosterTileHbm(IGame model, Guid id)
+    {
+        if (_posterTileHbm.TryGetValue(id, out var cachedHbm)) return cachedHbm;
+        IntPtr hbm = BuildTileHbm(model, id);
         _posterTileHbm[id] = hbm;
         _posterTileOrder.Enqueue(id);
         while (_posterTileOrder.Count > 600)
@@ -1748,6 +1852,22 @@ internal sealed class MainWindow : Form
     private void InvalidatePosterTile(Guid id)
     {
         if (_posterTileHbm.TryGetValue(id, out var h)) { if (h != IntPtr.Zero) DeleteObject(h); _posterTileHbm.Remove(id); }
+    }
+
+    private void OnPosterMouseMove(object sender, MouseEventArgs e)
+    {
+        int idx = _poster.GetItemAt(e.X, e.Y)?.Index ?? -1;
+        if (idx != _posterHot)
+        {
+            int old = _posterHot; _posterHot = idx;
+            InvalidatePosterItem(old); InvalidatePosterItem(idx);
+        }
+    }
+
+    private void InvalidatePosterItem(int index)
+    {
+        if (index < 0 || _poster == null || !_poster.Visible) return;
+        try { if (index < _poster.VirtualListSize) _poster.RedrawItems(index, index, false); } catch { }
     }
 
     // Decoded box thumb for a tile. When the thumb file is ALREADY on disk (the common case once browsed
@@ -1782,7 +1902,7 @@ internal sealed class MainWindow : Form
     }
 
     // Request a background thumb load (dedup + LIFO so the newest/visible tiles load first; bounded so a
-    // fast scroll never piles up unbounded work). Called from DrawPosterItem on the UI thread.
+    // fast scroll never piles up unbounded work). Called from BuildTileHbm on the UI thread.
     private void QueuePosterThumb(IGame model, Guid id)
     {
         bool spawn = false;
@@ -1836,7 +1956,7 @@ internal sealed class MainWindow : Form
             }
             catch { img = null; }
 
-            lock (_posterQLock) { _posterDone.Enqueue((id, img)); }
+            lock (_posterQLock) { _posterDone.Enqueue((model, id, img)); }
             RequestPosterDrain();
         }
     }
@@ -1860,13 +1980,14 @@ internal sealed class MainWindow : Form
         bool any = false;
         while (true)
         {
-            (Guid id, Image img) item;
+            (IGame g, Guid id, Image img) item;
             lock (_posterQLock) { if (_posterDone.Count == 0) break; item = _posterDone.Dequeue(); _posterPending.Remove(item.id); }
             if (IsDisposed) { item.img?.Dispose(); continue; }
             if (_posterBmp.TryGetValue(item.id, out var prev) && !ReferenceEquals(prev, item.img)) prev?.Dispose();
             _posterBmp[item.id] = item.img;     // null = "no art" sentinel (draw phantom, don't retry)
             _posterBmpOrder.Enqueue(item.id);
-            InvalidatePosterTile(item.id);      // the box thumb arrived → rebuild the (phantom) tile with it
+            if (_posterOwnerDraw) InvalidatePosterTile(item.id);   // drop stale tile → DrawPosterItem rebuilds
+            else RefreshSlot(item.g, item.id);                     // native: rebuild the (phantom) slot in place
             any = true;
         }
         while (_posterBmpOrder.Count > 600)
