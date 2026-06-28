@@ -154,7 +154,7 @@ internal sealed class LaunchButtons : Panel
         // Initial selection: last launch (ExtendDB) → default → first.
         _selEmu = ResolveInitialEmu();
         _selVerAppId = (_lastVerAppId != null && _versions.Any(v => v.appId == _lastVerAppId)) ? _lastVerAppId : null;
-        if (_romFeature && RomAppliesFor(_selVerAppId, CurrentEmuId())) _selRom = _lastRomEntry;
+        ApplyRomSelection();   // persisted pending pick (web-style) → else seed from last-launched ROM
 
         // Always show for a game — Play is available even with no platform
         // emulator (PC game → host resolves the default). Version/ROM self-hide.
@@ -268,7 +268,7 @@ internal sealed class LaunchButtons : Panel
             it.Click += (_, _) =>
             {
                 _selVerAppId = cv.appId;
-                _selRom = null; _forcePriority = false;   // version changed → archive may differ
+                ApplyRomSelection();   // version changed → re-read the pending pick for this version (per-version key)
                 Refresh2();
             };
             menu.Items.Add(it);
@@ -282,7 +282,7 @@ internal sealed class LaunchButtons : Panel
     // entries, then "More…" which opens the advanced picker (sortable table).
     private const int RomQuickMax = 7;
 
-    private sealed record RomEntry(string FileName, long Size, bool IsFavorite, bool IsLastPlayed);
+    private sealed record RomEntry(string FileName, long Size, bool IsFavorite, bool IsLastPlayed, bool HasRa);
 
     private void OnRomClick()
     {
@@ -295,36 +295,49 @@ internal sealed class LaunchButtons : Panel
 
         // ✕ Clear — drop the pick AND ignore last-played (pure priority), like the web.
         var clear = new ToolStripMenuItem("✕  Clear");
-        clear.Click += (_, _) => { _selRom = null; _forcePriority = true; Refresh2(); };
+        clear.Click += (_, _) => { _selRom = null; _forcePriority = true; PersistRomSelection(); Refresh2(); };
         menu.Items.Add(clear);
         menu.Items.Add(new ToolStripSeparator());
 
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        void Push(RomEntry e, string glyph)
-        {
-            if (e == null || !seen.Add(e.FileName)) return;
-            var it = new ToolStripMenuItem(glyph + e.FileName) { Checked = string.Equals(_selRom, e.FileName, StringComparison.OrdinalIgnoreCase) };
-            it.Click += (_, _) => { _selRom = e.FileName; _forcePriority = false; Refresh2(); };
-            menu.Items.Add(it);
-        }
 
-        // 1. last launched ROM (lastLaunch, else the most recently played).
+        // The single last-launched ROM (lastLaunch, else the most recently played) — gets the ↻ marker.
         RomEntry last = null;
         if (!string.IsNullOrEmpty(_lastRomEntry))
             last = entries.FirstOrDefault(e => string.Equals(e.FileName, _lastRomEntry, StringComparison.OrdinalIgnoreCase));
         last ??= entries.FirstOrDefault(e => e.IsLastPlayed);
-        if (last != null) Push(last, "↻ ");
+        var lastName = last?.FileName;
+
+        // Markers CUMULATE per entry, in order: ↻ (last launched) ★ (favourite) 🏆 (RetroAchievements).
+        // Computed from the entry's own properties (not the bucket), so a ROM that is e.g. last AND
+        // favourite AND RA shows "↻ ★ 🏆 name" rather than just the bucket's single glyph.
+        void Push(RomEntry e)
+        {
+            if (e == null || !seen.Add(e.FileName)) return;
+            var prefix = "";
+            if (e.IsLastPlayed || (lastName != null && string.Equals(e.FileName, lastName, StringComparison.OrdinalIgnoreCase))) prefix += "↻ ";
+            if (e.IsFavorite) prefix += "★ ";
+            if (e.HasRa)      prefix += "🏆 ";
+            var it = new ToolStripMenuItem(prefix + e.FileName) { Checked = string.Equals(_selRom, e.FileName, StringComparison.OrdinalIgnoreCase) };
+            it.Click += (_, _) => { _selRom = e.FileName; _forcePriority = false; PersistRomSelection(); Refresh2(); };
+            menu.Items.Add(it);
+        }
+
+        // 1. last launched ROM.
+        if (last != null) Push(last);
 
         // 2. all favourites.
-        foreach (var e in entries.Where(e => e.IsFavorite)) Push(e, "★ ");
+        foreach (var e in entries.Where(e => e.IsFavorite)) Push(e);
 
-        // 3. up to RomQuickMax in pure priority (neither last, fav, nor played).
+        // 3. up to RomQuickMax more, in score order. Favourites are already shown above, and the single
+        //    pinned last-launched is already in `seen` — but we do NOT skip the OTHER recently-played
+        //    here, else a recently-played high-scorer (e.g. the RA pick) would vanish into "More…".
         int prio = 0;
         foreach (var e in entries)
         {
             if (prio >= RomQuickMax) break;
-            if (e.IsFavorite || e.IsLastPlayed || seen.Contains(e.FileName)) continue;
-            Push(e, "");
+            if (e.IsFavorite || seen.Contains(e.FileName)) continue;
+            Push(e);
             prio++;
         }
 
@@ -345,7 +358,7 @@ internal sealed class LaunchButtons : Panel
         if (_game == null) return;
         var chosen = RomBridge.PickRomModal(_game, _selVerAppId);   // selection mode ("Select", not Play)
         if (chosen == null) return;                                  // cancelled
-        _selRom = chosen; _forcePriority = false;
+        _selRom = chosen; _forcePriority = false; PersistRomSelection();
         Refresh2();
     }
 
@@ -365,7 +378,8 @@ internal sealed class LaunchButtons : Panel
                 long size = e.TryGetProperty("size", out var s) && s.ValueKind == JsonValueKind.Number ? s.GetInt64() : 0;
                 bool fav = e.TryGetProperty("isFavorite", out var f) && f.ValueKind == JsonValueKind.True;
                 bool lp = e.TryGetProperty("isLastPlayed", out var l) && l.ValueKind == JsonValueKind.True;
-                list.Add(new RomEntry(name!, size, fav, lp));
+                bool ra = e.TryGetProperty("retroAchievements", out var r) && r.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(r.GetString());
+                list.Add(new RomEntry(name!, size, fav, lp, ra));
             }
             return list;
         }
@@ -376,7 +390,29 @@ internal sealed class LaunchButtons : Panel
     {
         if (string.IsNullOrEmpty(_selRom) && !_forcePriority) return;
         _selRom = null; _forcePriority = true;   // clear → ignore last-played, pure priority (like LB-Web)
+        PersistRomSelection();
         Refresh2();
+    }
+
+    // Persist the current pending ROM pick for (game, version) so it survives leaving the detail pane
+    // and restarting — the host-side mirror of LB-Web's localStorage. See RomSelectionStore.
+    private void PersistRomSelection()
+    {
+        var gid = Safe(() => _game?.Id);
+        if (!string.IsNullOrEmpty(gid)) RomSelectionStore.Set(gid!, _selVerAppId, _selRom, _forcePriority);
+    }
+
+    // Apply the persisted pending pick for the current (game, version) if any; else seed from the
+    // last-launched ROM (history). Mirrors LB-Web seeding (launchbox/app.js:2702): a persisted "Clear"
+    // (force-priority) suppresses the re-seed, so the cleared state sticks across re-entry.
+    private void ApplyRomSelection()
+    {
+        _selRom = null; _forcePriority = false;
+        if (!_romFeature || !RomAppliesFor(_selVerAppId, CurrentEmuId())) return;
+        var gid = Safe(() => _game?.Id);
+        var pending = string.IsNullOrEmpty(gid) ? null : RomSelectionStore.Get(gid!, _selVerAppId);
+        if (pending != null) { _selRom = pending.Value.rom; _forcePriority = pending.Value.force; }
+        else _selRom = _lastRomEntry;
     }
 
     // ── Launch ────────────────────────────────────────────────────────

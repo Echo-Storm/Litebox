@@ -517,6 +517,18 @@ internal static class HostLaunch
             bool autoExtract = (ep?.AutoExtract) ?? SafeBool(() => emulator.AutoExtract);
             if (autoExtract && IsArchive(romAbs))
             {
+                // ExtendDB owns archive extraction (Select-ROM pick, region/tag priority,
+                // smart-extract, cache, RA bonus). When its Archive MultiGame Selector is on,
+                // DEFER to it: leave the archive on the command line so the plugin's Process.Start
+                // patch extracts the CHOSEN entry. Our own 7z below would instead extract everything
+                // and launch the first file alphabetically — silently ignoring the user's selection.
+                // The fallback runs only when ExtendDB isn't handling archives, so launches still
+                // work if the plugin is absent/disabled (ROM stays the plugin's domain).
+                if (Media.RomBridge.Available)
+                {
+                    Console.WriteLine($"[launch] {label}: archive \"{Path.GetFileName(romAbs)}\" — ExtendDB owns extraction; passing the archive through (plugin picks the entry).");
+                    return romAbs;
+                }
                 var extracted = TryExtractArchive(romAbs, label);
                 if (!string.IsNullOrEmpty(extracted)) return extracted;
             }
