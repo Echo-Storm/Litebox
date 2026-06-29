@@ -29,8 +29,11 @@ internal static class RaXmlWriter
             Set(f, "RetroAchievementsBeatenSoftcore", data.beatenSoftcore ? "true" : "false");
             Set(f, "RetroAchievementsBeatenHardcore", data.beatenHardcore ? "true" : "false");
 
+            // Match LB's exact format: local time, 6 fractional digits + offset (e.g. ...13.171559+02:00),
+            // not .NET's 7-digit "o". Deterministic from fetchedAt, so the change-detection stays stable.
             if (DateTimeOffset.TryParse(data.fetchedAt, null, DateTimeStyles.RoundtripKind, out var dto))
-                Set(f, "RetroAchievementsPlaytimeCachedDate", dto.ToLocalTime().ToString("o"));
+                Set(f, "RetroAchievementsPlaytimeCachedDate",
+                    dto.ToLocalTime().ToString("yyyy-MM-ddTHH:mm:ss.ffffffzzz", CultureInfo.InvariantCulture));
         }
         catch { }
     }
