@@ -466,7 +466,19 @@ internal sealed class MainWindow : Form
             if (_cfg.GetBool("PosterMode", false)) _posterBtn.Checked = true;   // → SetPosterMode(true)
         };
         // Final dark-scrollbar pass once everything (data, columns) is in place.
-        Shown += (_, _) => { ApplyDarkScroll(_games); ApplyDarkScroll(_sources); ApplyDarkScroll(_notes); ApplyDarkScroll(_detailHost); RelayoutDetail(); };
+        Shown += (_, _) =>
+        {
+            ApplyDarkScroll(_games); ApplyDarkScroll(_sources); ApplyDarkScroll(_notes); ApplyDarkScroll(_detailHost); RelayoutDetail();
+            // RA native-fallback rolling refresh (opt-in) — after the window is up, on idle so it never
+            // delays the first paint. Gated internally (checkbox + ExtendDB-not-handling-RA + creds set).
+            try
+            {
+                BeginInvoke((Action)(() => RaStartupRefresh.RunIfEnabled(
+                    _dm, _cfg.RaStartupRollingRefresh,
+                    () => { try { BeginInvoke((Action)(() => (_dm as HostDataManagerXml)?.FlushIfSafe())); } catch { } })));
+            }
+            catch { }
+        };
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -1253,6 +1265,8 @@ internal sealed class MainWindow : Form
                 Configured = Ra.RaService.Configured,
                 Platforms = RaPlatformNamesSorted,
                 Run = RunRaScan,
+                RollingRefresh = _cfg.RaStartupRollingRefresh,
+                SetRollingRefresh = v => { _cfg.RaStartupRollingRefresh = v; _cfg.Save(); },
             };
             Options.LbGlobalOptions.AddSections(w, hdm2.LbSettings, hdm2.ReadOnly, raScan);
         }

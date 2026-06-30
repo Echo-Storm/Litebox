@@ -101,6 +101,30 @@ internal static class RaResolveLite
         catch (Exception ex) { Log("Resolve failed: " + ex.Message); return false; }
     }
 
+    /// <summary>Cheap re-link for an already-hashed game: look its rahash up in the (current) catalogue and
+    /// set/update RetroAchievementsId when the catalogue now returns one. NO RAHasher. Never CLEARS an
+    /// existing raid (a hash that dropped out of the catalogue keeps its id). Returns true when it changed
+    /// the raid. Picks up a raid that appeared in RA after the game was first resolved.</summary>
+    public static bool RelinkRaid(IGame game)
+    {
+        if (game is not ILiteBoxFields fields) return false;
+        try
+        {
+            string hash = fields.GetField("RetroAchievementsHash") ?? "";
+            if (string.IsNullOrEmpty(hash)) return false;
+            int cid = RaPlatformMap.ConsoleIdFor(Safe(() => game.Platform)) ?? 0;
+            if (cid <= 0) return false;
+            int raid = RaCatalogLite.LookupRaid(cid, hash);
+            if (raid <= 0) return false;   // still no match → leave as-is (never clear)
+            string cur = fields.GetField("RetroAchievementsId") ?? "";
+            if (cur == raid.ToString()) return false;
+            fields.SetField("RetroAchievementsId", raid.ToString());
+            Log($"\"{Safe(() => game.Title) ?? "?"}\" re-link → raid {raid} (was {(string.IsNullOrEmpty(cur) ? "<none>" : cur)}).");
+            return true;
+        }
+        catch (Exception ex) { Log("RelinkRaid failed: " + ex.Message); return false; }
+    }
+
     private static bool IsArchive(string path)
     {
         var ext = (Path.GetExtension(path) ?? "").TrimStart('.').ToLowerInvariant();

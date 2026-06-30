@@ -24,10 +24,14 @@ namespace LbApiHost.Host.Ra;
 
 internal static class RaScanLite
 {
-    public struct Counts { public int Processed, Hashed, Matched; }
+    public struct Counts { public int Processed, Changed, Matched; }
 
     /// <summary>Resolves RA for each game (sequential). <paramref name="onProgress"/>(processed, matched) is
-    /// called after each game. Honours <paramref name="ct"/>. Returns the totals.</summary>
+    /// called after each game. Honours <paramref name="ct"/>. Returns the totals.
+    /// <para>FULL: re-hash + re-lookup every game. LITE: for a game that already has a hash, cheap re-link
+    /// (pick up a raid added to RA later, no RAHasher); for a game with no hash, resolve it (RAHasher). So a
+    /// lite scan both fills the gaps AND refreshes raids — and its lookups refresh a console catalogue that's
+    /// past its 24h TTL.</para></summary>
     public static Counts Scan(IReadOnlyList<IGame> games, bool full, Action<int, int> onProgress, CancellationToken ct)
     {
         var c = new Counts();
@@ -37,12 +41,14 @@ internal static class RaScanLite
             if (ct.IsCancellationRequested) break;
             try
             {
-                bool set = RaResolveLite.Resolve(g, force: full);
-                if (set)
-                {
-                    c.Hashed++;
-                    if (g is ILiteBoxFields f && !string.IsNullOrEmpty(f.GetField("RetroAchievementsId"))) c.Matched++;
-                }
+                var f = g as ILiteBoxFields;
+                bool hasHash = f != null && !string.IsNullOrEmpty(f.GetField("RetroAchievementsHash"));
+                bool changed;
+                if (full) changed = RaResolveLite.Resolve(g, force: true);
+                else if (hasHash) changed = RaResolveLite.RelinkRaid(g);   // cheap: pick up a newly-available raid
+                else changed = RaResolveLite.Resolve(g, force: false);     // RAHasher: resolve a game with no hash
+                if (changed) c.Changed++;
+                if (f != null && !string.IsNullOrEmpty(f.GetField("RetroAchievementsId"))) c.Matched++;
             }
             catch { }
             c.Processed++;
@@ -141,7 +147,7 @@ internal sealed class RaScanProgress : Form
                 bool cancelled = _cts.IsCancellationRequested;
                 _bar.Value = Math.Min(_result.Processed, _bar.Maximum);
                 _label.Text = (cancelled ? "Cancelled. " : "Done. ")
-                            + $"{_result.Processed} processed · {_result.Hashed} hashed · {_result.Matched} raid(s).";
+                            + $"{_result.Processed} processed · {_result.Changed} updated · {_result.Matched} raid(s).";
                 _close.Text = "Close";
             }));
         }

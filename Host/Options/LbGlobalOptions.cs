@@ -27,6 +27,8 @@ internal sealed class RaScanHook
     public bool Configured;                                            // RA key/username present
     public System.Func<System.Collections.Generic.IEnumerable<string>>? Platforms;
     public System.Action<string, bool>? Run;                          // (platform, full)
+    public bool RollingRefresh;                                        // startup rolling-refresh checkbox state
+    public System.Action<bool>? SetRollingRefresh;                    // persist the checkbox (apply-live)
 }
 
 internal static class LbGlobalOptions
@@ -672,7 +674,10 @@ internal static class LbGlobalOptions
                 var full = ScanBtn("Full scan", 100);
                 lite.Click += (_, _) => raScan.Run?.Invoke(combo.SelectedItem as string, false);
                 full.Click += (_, _) => raScan.Run?.Invoke(combo.SelectedItem as string, true);
-                p.Controls.Add(lite); p.Controls.Add(full); y += 34;
+                p.Controls.Add(lite); p.Controls.Add(full); y += 36;
+                var roll = new CheckBox { Text = "Refresh up to 3 stale platform catalogues at startup (rolling background update)", Location = new Point(4, y), AutoSize = true, ForeColor = Fg, BackColor = Bg, Checked = raScan.RollingRefresh, Enabled = en };
+                roll.CheckedChanged += (_, _) => raScan.SetRollingRefresh?.Invoke(roll.Checked);
+                p.Controls.Add(roll); y += 28;
                 p.Controls.Add(new Label { Text = "Lite: only games with no hash yet.   ·   Full: recompute all (picks up a raid added to RA later).", Location = new Point(4, y), AutoSize = true, MaximumSize = new Size(540, 0), ForeColor = Sub });
             }
         }

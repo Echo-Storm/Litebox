@@ -176,6 +176,9 @@ internal sealed class LiteBoxConfig
     public bool UnloadGameCacheDuringGame { get => GetBool("UnloadGameCacheDuringGame", true); set => SetBool("UnloadGameCacheDuringGame", value); }
     // true → reserve a 16:9 area for the main media; false → a poster-ratio (2:3) area.
     public bool Use169ForMainScreenshot { get => GetBool("Use16:9ForMainScreenshot", true); set => SetBool("Use16:9ForMainScreenshot", value); }
+    // RetroAchievements native fallback: at launch, refresh up to 3 console catalogues older than 48h and
+    // re-link games that gained a raid (rolling background update). Off by default (a startup network op).
+    public bool RaStartupRollingRefresh { get => GetBool("RaStartupRollingRefresh", false); set => SetBool("RaStartupRollingRefresh", value); }
     public string GameRunningText     => Get("GameRunningText", "Game running...");
     public Color GameRunningColor     => ParseColor(Get("GameRunningColor", "#0F0F12"), Color.FromArgb(15, 15, 18));
 

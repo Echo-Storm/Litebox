@@ -52,6 +52,31 @@ internal static class RaCatalogLite
         return map.TryGetValue(hash!.Trim().ToLowerInvariant(), out var raid) ? raid : 0;
     }
 
+    /// <summary>Force-refetch a console's catalogue, bypassing the 24h TTL (guarded as usual). Returns true
+    /// when a fresh map was stored; on a guarded failure keeps the existing cache. Used by the manual scan
+    /// and the startup rolling refresh.</summary>
+    public static bool Refresh(int consoleId)
+    {
+        if (consoleId <= 0) return false;
+        lock (_gate)
+        {
+            var fetched = Fetch(consoleId);
+            if (fetched == null) return false;
+            try { File.WriteAllText(CacheFile(consoleId), JsonSerializer.Serialize(fetched)); } catch { }
+            _memo[consoleId] = fetched;
+            return true;
+        }
+    }
+
+    /// <summary>Age (hours) of a console's cached catalogue file; double.MaxValue when there's no cache yet.
+    /// Drives the startup rolling refresh's "oldest first" selection.</summary>
+    public static double CacheAgeHours(int consoleId)
+    {
+        try { var f = CacheFile(consoleId); if (File.Exists(f)) return (DateTime.UtcNow - File.GetLastWriteTimeUtc(f)).TotalHours; }
+        catch { }
+        return double.MaxValue;
+    }
+
     private static Dictionary<string, int> GetMap(int consoleId)
     {
         lock (_gate)
