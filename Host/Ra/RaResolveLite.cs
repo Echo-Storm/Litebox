@@ -26,18 +26,23 @@ internal static class RaResolveLite
 {
     private static readonly string[] ArchiveExts = { "zip", "7z", "rar" };
 
-    /// <summary>Fills hash+raid for a game that has none. Returns true when it set at least the hash.
-    /// Caller gates this to "ExtendDB isn't handling RA" (RomBridge.RaActive == false).</summary>
-    public static bool Resolve(IGame game)
+    /// <summary>Fills hash+raid for a game. Returns true when it set at least the hash. Caller gates this to
+    /// "ExtendDB isn't handling RA" (RomBridge.RaActive == false). <paramref name="force"/>=false (the auto
+    /// on-select path) only acts when the game has NO hash yet; force=true (the full-scan) recomputes and
+    /// overwrites even an existing hash — used to pick up a raid that appeared in RA after first resolution.</summary>
+    public static bool Resolve(IGame game, bool force = false)
     {
         if (game is not ILiteBoxFields fields) return false;
         try
         {
             string title = Safe(() => game.Title) ?? "?";
 
-            // Trigger only if no hash yet.
-            string cur = fields.GetField("RetroAchievementsHash") ?? "";
-            if (!string.IsNullOrEmpty(cur)) return false;
+            // Auto path: trigger only if no hash yet. Full-scan (force) recomputes regardless.
+            if (!force)
+            {
+                string cur = fields.GetField("RetroAchievementsHash") ?? "";
+                if (!string.IsNullOrEmpty(cur)) return false;
+            }
 
             string? platform = Safe(() => game.Platform);
             int? cid = RaPlatformMap.ConsoleIdFor(platform);
