@@ -68,7 +68,7 @@ internal sealed class LiteBoxConfig
     private void WriteTemplate()
     {
         // Seed defaults + comments so the file is self-documenting.
-        _kv["ReadOnly"] = "true";
+        _kv["ReadOnly"] = "false";
         _kv["ShowGameRunningScreen"] = "true";
         _kv["UnloadListDuringGame"] = "true";
         _kv["KillStoreLauncherAfterGame"] = "false";
@@ -160,7 +160,7 @@ internal sealed class LiteBoxConfig
         => Set("EnabledPlugins", string.Join(",", names));
 
     // ── Typed options ────────────────────────────────────────────────────────
-    public bool ReadOnly              { get => GetBool("ReadOnly", true); set => SetBool("ReadOnly", value); }
+    public bool ReadOnly              { get => GetBool("ReadOnly", false); set => SetBool("ReadOnly", value); }
     public bool ShowGameRunningScreen { get => GetBool("ShowGameRunningScreen", true); set => SetBool("ShowGameRunningScreen", value); }
     public bool UnloadListDuringGame  { get => GetBool("UnloadListDuringGame", true); set => SetBool("UnloadListDuringGame", value); }
     // Close the GOG/Steam/Epic/Ubisoft client after a store game exits — by default only the instance

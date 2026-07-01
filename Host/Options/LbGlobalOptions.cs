@@ -13,6 +13,7 @@
 #nullable enable
 
 using LbApiHost.Host.Data;
+using LbApiHost.Host.Store;
 
 namespace LbApiHost.Host.Options;
 
@@ -595,14 +596,89 @@ internal static class LbGlobalOptions
             BindTxt(user, "EmuMoviesUserId"); BindTxt(pwd, "EmuMoviesPassword");
         }
 
-        // ── GOG ──
+        // ── GOG ── (credentials round-trip + a LOCAL diagnostics panel: galaxy-2.0.db is the achievements
+        //    source (client need not run), plus Galaxy client status and library stats — all offline.)
         {
             var p = Page("GOG");
+            var Good = Color.FromArgb(120, 200, 140);
+            var Bad = Color.FromArgb(222, 110, 110);
+            var Warn = Color.FromArgb(222, 175, 90);
+            var Sub = Color.FromArgb(150, 150, 152);
+            var LinkC = Color.FromArgb(120, 170, 230);
+
+            LinkLabel Link(string text, Point loc, Func<string?> target)
+            {
+                var ll = new LinkLabel { Text = text, Location = loc, AutoSize = true, BackColor = Bg, LinkColor = LinkC, ActiveLinkColor = Color.FromArgb(150, 190, 240), Font = new Font("Segoe UI", 8.5f) };
+                ll.LinkClicked += (_, _) => { var t = target(); if (!string.IsNullOrEmpty(t)) try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(t) { UseShellExecute = true }); } catch { } };
+                return ll;
+            }
+            Label Stat(Point loc, int w = 540) => new() { Location = loc, AutoSize = false, Size = new Size(w, 20), ForeColor = Sub, BackColor = Bg, Font = new Font("Segoe UI", 8.75f) };
+
             p.Controls.Add(Lbl("Profile Name", new Point(4, 8)));
             var prof = Txt(s.Get("GogProfileName"), new Point(4, 28), 280); p.Controls.Add(prof);
-            var galaxy = Chk("Launch games through GOG Galaxy client (when possible)", s.GetBool("GogLaunchWithClient"), new Point(4, 64));
-            p.Controls.Add(galaxy);
-            BindTxt(prof, "GogProfileName"); BindChk(galaxy, "GogLaunchWithClient");
+            p.Controls.Add(Link("Open profile ↗", new Point(292, 31), () => GogDiagnostics.ProfileUrl(prof.Text)));
+            BindTxt(prof, "GogProfileName");
+            // NB no "Launch games through GOG Galaxy client" toggle: LiteBox always launches GOG games via
+            // the Galaxy shortcut regardless, so the LB setting has no effect here.
+
+            p.Controls.Add(new Label { Text = "Status", Location = new Point(4, 64), AutoSize = true, ForeColor = Fg, BackColor = Bg, Font = new Font("Segoe UI", 9.75f, FontStyle.Bold) });
+            var dbLbl = Stat(new Point(4, 88));
+            var clientLbl = Stat(new Point(4, 112));
+            p.Controls.Add(dbLbl); p.Controls.Add(clientLbl);
+            var explain = new Label { Location = new Point(4, 136), AutoSize = false, Size = new Size(540, 34), ForeColor = Sub, BackColor = Bg, Font = new Font("Segoe UI", 8.25f) };
+            p.Controls.Add(explain);
+            var statsLbl = Stat(new Point(4, 174));
+            p.Controls.Add(statsLbl);
+            var reBtn = new Button { Text = "Re-check", Location = new Point(4, 202), Size = new Size(96, 26), FlatStyle = FlatStyle.Flat, BackColor = Panel2, ForeColor = Fg, FlatAppearance = { BorderSize = 0 }, Font = new Font("Segoe UI", 8.5f) };
+            p.Controls.Add(reBtn);
+
+            void Refresh()
+            {
+                reBtn.Enabled = false;
+                dbLbl.Text = "Achievements source: …"; dbLbl.ForeColor = Sub;
+                clientLbl.Text = "GOG Galaxy client: …"; clientLbl.ForeColor = Sub;
+                statsLbl.Text = "Library: …"; explain.Text = "";
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    try
+                    {
+                        bool db = GogDiagnostics.DbPresent();
+                        var client = GogDiagnostics.ClientStatus();
+                        int lb = GogDiagnostics.LbGogGameCount();
+                        var (owned, installed) = GogDiagnostics.LibraryCounts();
+                        if (!p.IsHandleCreated) return;
+                        p.BeginInvoke((Action)(() =>
+                        {
+                            if (db) { dbLbl.Text = "Achievements source (galaxy-2.0.db): found ✓ — read locally, Galaxy can stay closed."; dbLbl.ForeColor = Good; }
+                            else { dbLbl.Text = "Achievements source (galaxy-2.0.db): not found ✗ — GOG achievements unavailable."; dbLbl.ForeColor = Bad; }
+
+                            switch (client)
+                            {
+                                case GogDiagnostics.GalaxyState.Running:
+                                    clientLbl.Text = "GOG Galaxy client: running ✓"; clientLbl.ForeColor = Good; break;
+                                case GogDiagnostics.GalaxyState.Installed:
+                                    clientLbl.Text = "GOG Galaxy client: installed, not running (not required for achievements)"; clientLbl.ForeColor = Warn; break;
+                                default:
+                                    clientLbl.Text = "GOG Galaxy client: not installed"; clientLbl.ForeColor = Sub; break;
+                            }
+
+                            explain.Text = db
+                                ? "GOG achievements are read directly from Galaxy's local database — the client does NOT need to be running (Galaxy just needs to have synced your library at least once)."
+                                : "Install GOG Galaxy and sign in once so it syncs your library; LiteBox then reads achievements from its local database (offline afterwards).";
+
+                            string o = owned >= 0 ? owned.ToString() : "?";
+                            string inst = installed >= 0 ? installed.ToString() : "?";
+                            statsLbl.Text = $"Library:  {o} owned  ·  {lb} in LaunchBox  ·  {inst} installed on this PC";
+                            statsLbl.ForeColor = Fg;
+                            reBtn.Enabled = true;
+                        }));
+                    }
+                    catch { }
+                });
+            }
+            reBtn.Click += (_, _) => Refresh();
+            bool checkedOnce = false;
+            tabs.SelectedIndexChanged += (_, _) => { if (tabs.SelectedTab == p && !checkedOnce) { checkedOnce = true; Refresh(); } };
         }
 
         // ── LEDBlinky ──
@@ -686,14 +762,118 @@ internal static class LbGlobalOptions
             }
         }
 
-        // ── Steam ──
+        // ── Steam ── (credentials round-trip to Settings.xml + a live diagnostics panel: key validity,
+        //    profile link, local client detection, "Game details" public status, and library stats.)
         {
             var p = Page("Steam");
-            p.Controls.Add(Lbl("Steam Custom URL  (https://steamcommunity.com/id/…)", new Point(4, 8)));
-            var url = Txt(s.Get("SteamUserName"), new Point(4, 28), 360); p.Controls.Add(url);
+            var Good = Color.FromArgb(120, 200, 140);
+            var Bad = Color.FromArgb(222, 110, 110);
+            var Warn = Color.FromArgb(222, 175, 90);
+            var Sub = Color.FromArgb(150, 150, 152);
+            var LinkC = Color.FromArgb(120, 170, 230);
+
+            LinkLabel Link(string text, Point loc, Func<string?> target)
+            {
+                var ll = new LinkLabel { Text = text, Location = loc, AutoSize = true, BackColor = Bg, LinkColor = LinkC, ActiveLinkColor = Color.FromArgb(150, 190, 240), Font = new Font("Segoe UI", 8.5f) };
+                ll.LinkClicked += (_, _) => { var t = target(); if (!string.IsNullOrEmpty(t)) try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(t) { UseShellExecute = true }); } catch { } };
+                return ll;
+            }
+            Label Stat(Point loc, int w = 520) => new() { Location = loc, AutoSize = false, Size = new Size(w, 20), ForeColor = Sub, BackColor = Bg, Font = new Font("Segoe UI", 8.75f) };
+
+            p.Controls.Add(Lbl("Steam Custom URL  (https://steamcommunity.com/id/…)  — vanity name or 64-bit id", new Point(4, 8)));
+            var url = Txt(s.Get("SteamUserName"), new Point(4, 28), 300); p.Controls.Add(url);
+            p.Controls.Add(Link("Open profile ↗", new Point(312, 31), () => SteamDiagnostics.ProfileUrl(url.Text)));
+
             p.Controls.Add(Lbl("API Key", new Point(4, 60)));
+            var keyStatus = new Label { Location = new Point(70, 60), AutoSize = true, ForeColor = Sub, BackColor = Bg, Font = new Font("Segoe UI", 8.75f) };
+            p.Controls.Add(keyStatus);
             var key = Txt(s.Get("SteamApiKey"), new Point(4, 80), 380); p.Controls.Add(key);
             BindTxt(url, "SteamUserName"); BindTxt(key, "SteamApiKey");
+
+            p.Controls.Add(new Label { Text = "Status", Location = new Point(4, 120), AutoSize = true, ForeColor = Fg, BackColor = Bg, Font = new Font("Segoe UI", 9.75f, FontStyle.Bold) });
+            var clientLbl = Stat(new Point(4, 144));
+            var publicLbl = Stat(new Point(4, 168));
+            p.Controls.Add(clientLbl); p.Controls.Add(publicLbl);
+            p.Controls.Add(Link("Set “Game details” privacy ↗", new Point(4, 190), () => SteamDiagnostics.PrivacyUrl(url.Text)));
+            var explain = new Label { Location = new Point(4, 212), AutoSize = false, Size = new Size(540, 46), ForeColor = Sub, BackColor = Bg, Font = new Font("Segoe UI", 8.25f) };
+            p.Controls.Add(explain);
+            var statsLbl = Stat(new Point(4, 264));
+            p.Controls.Add(statsLbl);
+            var reBtn = new Button { Text = "Re-check", Location = new Point(4, 292), Size = new Size(96, 26), FlatStyle = FlatStyle.Flat, BackColor = Panel2, ForeColor = Fg, FlatAppearance = { BorderSize = 0 }, Font = new Font("Segoe UI", 8.5f) };
+            p.Controls.Add(reBtn);
+
+            void Refresh()
+            {
+                string k = key.Text.Trim(), u = url.Text.Trim();
+                reBtn.Enabled = false;
+                keyStatus.Text = "checking…"; keyStatus.ForeColor = Sub;
+                clientLbl.Text = "Steam client: …"; clientLbl.ForeColor = Sub;
+                publicLbl.Text = "Web achievements (Game details): …"; publicLbl.ForeColor = Sub;
+                statsLbl.Text = "Library: …"; explain.Text = "";
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    try
+                    {
+                        var client = SteamDiagnostics.ClientStatus();
+                        int lb = SteamDiagnostics.LbSteamGameCount();
+                        int inst = SteamDiagnostics.InstalledCount();
+                        SteamDiagnostics.Probe pr;
+                        using (var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(20)))
+                            pr = SteamDiagnostics.Run(k, u, cts.Token);
+                        if (!p.IsHandleCreated) return;
+                        p.BeginInvoke((Action)(() =>
+                        {
+                            // API key
+                            if (k.Length == 0) { keyStatus.Text = "— no key set"; keyStatus.ForeColor = Sub; }
+                            else if (pr.KeyValid) { keyStatus.Text = "✓ valid"; keyStatus.ForeColor = Good; }
+                            else { keyStatus.Text = "✗ invalid / rejected"; keyStatus.ForeColor = Bad; }
+
+                            // local client (3 levels)
+                            switch (client)
+                            {
+                                case SteamDiagnostics.ClientState.Running:
+                                    clientLbl.Text = "Steam client: running ✓"; clientLbl.ForeColor = Good; break;
+                                case SteamDiagnostics.ClientState.Installed:
+                                    clientLbl.Text = "Steam client: installed, not running (launch it for client-based achievements)"; clientLbl.ForeColor = Warn; break;
+                                default:
+                                    clientLbl.Text = "Steam client: not installed"; clientLbl.ForeColor = Sub; break;
+                            }
+
+                            // Game-details public → web path
+                            if (pr.GameDetailsPublic == true)
+                            {
+                                publicLbl.Text = "Web achievements: profile is Public ✓ — works even with Steam closed.";
+                                publicLbl.ForeColor = Good;
+                                explain.Text = "“Game details” is public, so LiteBox reads your Steam achievements over the web — no need to keep the Steam client running.";
+                            }
+                            else if (pr.GameDetailsPublic == false)
+                            {
+                                publicLbl.Text = "Web achievements: profile is Private ✗ — falling back to the Steam client.";
+                                publicLbl.ForeColor = Warn;
+                                explain.Text = "“Game details” is private, so LiteBox reads achievements from the running Steam client instead — the client must stay open. Set “Game details” to Public (link above) to use the web path (Steam can then be closed).";
+                            }
+                            else
+                            {
+                                publicLbl.Text = "Web achievements (Game details): unknown";
+                                publicLbl.ForeColor = Sub;
+                                explain.Text = pr.Note != null ? "(" + pr.Note + ")" : "Couldn't determine the profile's achievement visibility.";
+                            }
+
+                            // library stats
+                            string owned = pr.OwnedCount >= 0 ? pr.OwnedCount.ToString() : "?";
+                            string installed = inst >= 0 ? inst.ToString() : "?";
+                            statsLbl.Text = $"Library:  {owned} owned  ·  {lb} in LaunchBox  ·  {installed} installed on this PC";
+                            statsLbl.ForeColor = Fg;
+                            reBtn.Enabled = true;
+                        }));
+                    }
+                    catch { }
+                });
+            }
+            reBtn.Click += (_, _) => Refresh();
+            // Probe only when the user actually opens the Steam tab (no network unless they look).
+            bool checkedOnce = false;
+            tabs.SelectedIndexChanged += (_, _) => { if (tabs.SelectedTab == p && !checkedOnce) { checkedOnce = true; Refresh(); } };
         }
 
         // ── OBS Studio ──
@@ -712,19 +892,8 @@ internal static class LbGlobalOptions
             BindChk(auto, "AutoAddObsRecordings"); BindTxt(folder, "ObsRecordingsFolder"); BindChk(ensure, "StartObsWithGames"); BindTxt(exe, "ObsExePath");
         }
 
-        var host = new Panel { BackColor = Bg };
-        var note = new Label
-        {
-            Dock = DockStyle.Top, Height = 22,
-            Text = "No impact on LiteBox yet — stored for LaunchBox (and reusable when LiteBox grows these features).",
-            ForeColor = Color.FromArgb(225, 95, 95), BackColor = Bg,
-            Font = new Font("Segoe UI", 8.25f, FontStyle.Italic),
-        };
-        host.Controls.Add(tabs);
-        host.Controls.Add(note);
-        tabs.BringToFront();
         apply = () => { foreach (var a in applies) a(); };
-        return host;
+        return tabs;
     }
 
     // ── Generic media priority list (checklist + Move Up/Down + Revert to Default) ──

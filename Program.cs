@@ -41,6 +41,16 @@ AssemblyLoadContext.Default.Resolving += (ctx, name) =>
     return File.Exists(candidate) ? ctx.LoadFromAssemblyPath(candidate) : null;
 };
 
+// Steam achievements helper: read ONE appid's achievement unlock state via Steamworks and print it as
+// JSON, then exit. Steamworks binds a single app per process, so LiteBox re-launches itself once per
+// query (see Store.SteamHelper). Handled early — never reaches the GUI boot.
+if (args.Contains("--steam-ach"))
+{
+    int si = Array.IndexOf(args, "--steam-ach");
+    string appId = (si >= 0 && si + 1 < args.Length) ? args[si + 1] : null;
+    return LbApiHost.Host.Store.SteamHelper.RunHelperMode(appId);
+}
+
 // Temporary entry point. For now the host only knows how to dump the LB
 // plugin SDK surface (the spec we implement next). Real host boot comes later.
 string ProjPath(string rel) =>

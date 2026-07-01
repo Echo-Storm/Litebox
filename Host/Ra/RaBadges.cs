@@ -11,7 +11,7 @@ namespace LbApiHost.Host.Ra;
 /// card asks for whichever matches the unlock state; both are cached by their own filename.</summary>
 internal static class RaBadges
 {
-    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(20) };
+    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(10) };
 
     private static string Dir
     {

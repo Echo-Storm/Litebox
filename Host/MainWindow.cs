@@ -1272,6 +1272,10 @@ internal sealed class MainWindow : Form
                 "legacy = LaunchBox-style native overlay. advanced = LiteBox WebView mode (not implemented yet — falls back to legacy)."),
         });
 
+        // LiteBox-local caches — a maintenance button (always enabled, even in read-only: it only
+        // touches LiteBox's own Core cache folders, never the LaunchBox files).
+        w.AddSection("Caches", BuildCachesSection());
+
         // LaunchBox GLOBAL settings (Settings.xml, write-back via the op-log +
         // scoped flush after the window closes). Greyed out in read-only mode.
         if (_dm is HostDataManagerXml hdm2)
@@ -1292,6 +1296,79 @@ internal sealed class MainWindow : Form
         }
 
         return w;
+    }
+
+    // ── LiteBox cache maintenance (Options → Caches) ─────────────────────────────────────────
+    // Achievement caches LiteBox keeps under Core\ : the normalised JSON (ra-cache / store-ach-cache)
+    // and the downloaded badge images (ra-badges / store-ach-badges).
+    private static readonly string[] _achCacheDirs = { "ra-cache", "ra-badges", "store-ach-cache", "store-ach-badges" };
+
+    private static (int files, long bytes) AchCacheSize()
+    {
+        int f = 0; long b = 0;
+        foreach (var d in _achCacheDirs)
+        {
+            try
+            {
+                var dir = Path.Combine(AppContext.BaseDirectory, d);
+                if (!Directory.Exists(dir)) continue;
+                foreach (var file in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
+                { f++; try { b += new FileInfo(file).Length; } catch { } }
+            }
+            catch { }
+        }
+        return (f, b);
+    }
+
+    private static void ClearAchCache()
+    {
+        foreach (var d in _achCacheDirs)
+            try { var dir = Path.Combine(AppContext.BaseDirectory, d); if (Directory.Exists(dir)) Directory.Delete(dir, true); }
+            catch { }
+    }
+
+    private Control BuildCachesSection()
+    {
+        var p = new Panel { BackColor = Bg, AutoScroll = true };
+        var title = new Label { Text = "Achievements cache", Location = new Point(4, 8), AutoSize = true, ForeColor = Fg, BackColor = Bg, Font = new Font("Segoe UI", 9.75f, FontStyle.Bold) };
+        var desc = new Label
+        {
+            Text = "RetroAchievements + GOG/Steam achievement data and downloaded badge images "
+                 + "(Core\\ra-cache, ra-badges, store-ach-cache, store-ach-badges). Clearing forces a fresh "
+                 + "fetch the next time you view a game.",
+            Location = new Point(4, 32), AutoSize = true, MaximumSize = new Size(560, 0), ForeColor = SubFg, BackColor = Bg,
+            Font = new Font("Segoe UI", 8.5f),
+        };
+        var size = new Label { Location = new Point(4, 84), AutoSize = true, ForeColor = Fg, BackColor = Bg };
+        var btn = new Button
+        {
+            Text = "Clear achievements cache", Location = new Point(4, 108), Size = new Size(210, 28),
+            FlatStyle = FlatStyle.Flat, BackColor = Panel2, ForeColor = Fg, FlatAppearance = { BorderSize = 0 },
+            Font = new Font("Segoe UI", 9f),
+        };
+        void RefreshSize()
+        {
+            var (f, b) = AchCacheSize();
+            size.Text = f == 0 ? "Cache is empty." : $"Currently cached: {f} file(s), {b / (1024.0 * 1024.0):0.0} MB.";
+            btn.Enabled = f > 0;
+        }
+        btn.Click += (_, _) =>
+        {
+            var (f, b) = AchCacheSize();
+            if (f == 0) return;
+            if (MessageBox.Show(p.FindForm(),
+                    $"Delete {f} cached achievement file(s) ({b / (1024.0 * 1024.0):0.0} MB)?\n\n"
+                    + "RetroAchievements and GOG/Steam achievements will be re-fetched the next time you view a game.",
+                    "Clear achievements cache", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+                return;
+            ClearAchCache();
+            RefreshSize();
+            // Re-load the detail panels for the current selection so the effect shows immediately.
+            try { var g = _games?.SelectedGame; if (g != null) ScheduleMedia(g); } catch { }
+        };
+        RefreshSize();
+        p.Controls.Add(title); p.Controls.Add(desc); p.Controls.Add(size); p.Controls.Add(btn);
+        return p;
     }
 
     /// <summary>Live-apply for the "Use game cache" toggle (same behaviour the old
@@ -2685,7 +2762,9 @@ internal sealed class MainWindow : Form
             }
 
             // 3) fetch/cache achievements + medians (refetch if stale or played since cached), then show
-            var data = RaService.EnsureAndRead(raid, lastPlayedUtc);
+            RaGameCache data = null;
+            try { data = RaService.EnsureAndRead(raid, lastPlayedUtc); }
+            catch (Exception ex) { Console.WriteLine("[ra] fetch failed: " + ex.Message); }
             try
             {
                 BeginInvoke(new Action(() =>
@@ -2703,18 +2782,35 @@ internal sealed class MainWindow : Form
         });
     }
 
-    // Loads + shows the store-achievements card at the debounced detail-load. PURE LiteBox: for a GOG
-    // game (Source=="GOG" + a GogAppId) the achievements come straight from Galaxy's LOCAL galaxy-2.0.db
-    // (GogAchievements → the shared GalaxyDb snapshot), cached per app id and refreshed when the game was
-    // played since cached or Galaxy re-synced — the same freshness rule as the RA card. Steam is out of
-    // scope for now (it needs the Steamworks helper), so non-GOG games simply hide the card.
+    // Loads + shows the store-achievements card at the debounced detail-load. PURE LiteBox, per store:
+    //   GOG   → Galaxy's LOCAL galaxy-2.0.db (GogAchievements; full detail, whole owned library).
+    //   Steam → the Steamworks helper for the private unlock state + localized names, enriched with web
+    //           icons/rarity via the API key (SteamAchievements). No public profile needed.
+    // Cached per app id, refreshed when played since cached (the RA card's freshness rule). Non-store
+    // games (or store games without an id) hide the card.
     private void LoadStoreAchPanel(IGame g, int token)
     {
         if (_storeAchCard == null) return;
         string source = Safe(() => g.Source) ?? "";
         string gogId = Safe(() => (g as ILiteBoxGame)?.GetField("GogAppId")) ?? "";
-        bool isGog = source.Equals("GOG", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(gogId);
-        if (!isGog) { _storeAchCard.HidePanel(); return; }
+        string steamId = Safe(() => StoreSupport.SteamAppId(g.ApplicationPath)) ?? "";
+
+        string title;
+        Func<StoreAchCache?> readCache;
+        Func<DateTime, StoreAchCache?> ensure;
+        if (source.Equals("GOG", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(gogId))
+        {
+            title = "GOG Achievements";
+            readCache = () => GogAchievements.ReadCache(gogId);
+            ensure = lp => GogAchievements.EnsureAndRead(gogId, lp);
+        }
+        else if (source.Equals("Steam", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(steamId))
+        {
+            title = "Steam Achievements";
+            readCache = () => SteamAchievements.ReadCache(steamId);
+            ensure = lp => SteamAchievements.EnsureAndRead(steamId, lp);
+        }
+        else { _storeAchCard.HidePanel(); return; }
 
         // Played-since-cached invalidates the cache (your unlock progress changed). Read on the UI thread.
         DateTime lastPlayedUtc;
@@ -2723,19 +2819,21 @@ internal sealed class MainWindow : Form
 
         void ShowWith(StoreAchCache c)
         {
-            _storeAchCard.Title = "GOG Achievements";
+            _storeAchCard.Title = title;
             _storeAchCard.Show(c);
             _storeAchCard.Expanded = _storeAchExpanded;
         }
 
-        // Optimistic first paint from any cache; the local DB read confirms/updates on a bg thread.
-        var cached0 = GogAchievements.ReadCache(gogId);
+        // Optimistic first paint from any cache; the live read confirms/updates on a bg thread.
+        var cached0 = readCache();
         if (cached0 != null && cached0.total > 0) ShowWith(cached0);
         else _storeAchCard.ShowLoading();
 
         System.Threading.Tasks.Task.Run(() =>
         {
-            var data = GogAchievements.EnsureAndRead(gogId, lastPlayedUtc);
+            StoreAchCache data = null;
+            try { data = ensure(lastPlayedUtc); }
+            catch (Exception ex) { Console.WriteLine("[storeach] fetch failed: " + ex.Message); }
             if (IsDisposed || token != _detailsLoadToken) return;
             try
             {

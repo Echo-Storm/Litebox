@@ -123,9 +123,10 @@ LiteBox.exe --selftest-writeback  round-trips the write-back op-log on temp file
 
 ## Options (gear menu / `LiteBox.ini`)
 
-- **ReadOnly** (default **true**): never write to the LaunchBox XMLs; edits stay in
-  memory for the session. Set false to persist them via the operation log (see
-  write-back above) — applied to the XMLs only when LB/BigBox aren't running.
+- **ReadOnly** (default **false**): when **true**, never write to the LaunchBox XMLs;
+  edits stay in memory for the session. Left false (default) they persist via the
+  operation log (see write-back above) — applied to the XMLs only when LB/BigBox
+  aren't running.
   **Second instance:** if another LiteBox is already running, the new instance is forced
   read-only for the session (only one instance may own the XMLs / op-log). The change is
   in-memory only — `LiteBox.ini` is left untouched — and the window makes it explicit: a

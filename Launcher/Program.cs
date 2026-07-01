@@ -40,6 +40,7 @@ internal static class Program
     {
         ("Everything64.dll.api",          @"ThirdParty\Everything",        "Everything64.dll"),
         ("Magick.Native-Q16-x64.dll.api", @"ThirdParty\ExtendDB",          "Magick.Native-Q16-x64.dll"),
+        ("steam_api64.dll.api",           @"ThirdParty\Steam",             "steam_api64.dll"),
         ("RahasherExtendDB.exe",          @"ThirdParty\RetroAchievements", "RahasherExtendDB.exe"),
         ("7z.dll.api",                    @"ThirdParty\RetroAchievements", "7z.dll"),
         ("MSVCP140.dll.api",              @"ThirdParty\RetroAchievements", "MSVCP140.dll"),

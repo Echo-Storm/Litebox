@@ -107,7 +107,11 @@ internal static class GalaxyDb
     {
         var src = SourceDbPath();
         if (src == null) return false;
-        lock (_lock)
+        // TryEnter (not a bare lock): if a previous read is wedged holding the lock, later callers time out
+        // and degrade instead of blocking forever — one stuck read can't poison every GOG lookup after it.
+        if (!System.Threading.Monitor.TryEnter(_lock, TimeSpan.FromSeconds(20)))
+        { Console.WriteLine("[galaxydb] read: busy (another read held the lock too long)"); return false; }
+        try
         {
             try
             {
@@ -137,11 +141,13 @@ internal static class GalaxyDb
                 using var con = new SqliteConnection(
                     new SqliteConnectionStringBuilder { DataSource = _snapPath, Mode = SqliteOpenMode.ReadWrite, Pooling = false }.ToString());
                 con.Open();
+                try { using var bt = con.CreateCommand(); bt.CommandText = "PRAGMA busy_timeout=4000"; bt.ExecuteNonQuery(); } catch { }
                 try { using var ck = con.CreateCommand(); ck.CommandText = "PRAGMA wal_checkpoint(TRUNCATE)"; ck.ExecuteNonQuery(); } catch { }
                 read(con);
                 return true;
             }
             catch (Exception ex) { Console.WriteLine("[galaxydb] read: " + ex.Message); return false; }
         }
+        finally { System.Threading.Monitor.Exit(_lock); }
     }
 }

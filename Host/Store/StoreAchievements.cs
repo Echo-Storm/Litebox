@@ -51,7 +51,7 @@ internal static class StoreBadges
     private static readonly HttpClient Http = BuildClient();
     private static HttpClient BuildClient()
     {
-        var c = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+        var c = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         try { c.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64)"); } catch { }
         return c;
     }

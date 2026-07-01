@@ -28,7 +28,7 @@ internal static class RaService
     private static readonly HttpClient Http = BuildClient();
     private static HttpClient BuildClient()
     {
-        var c = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        var c = new HttpClient { Timeout = TimeSpan.FromSeconds(12) };
         // RA's WAF 403s the default .NET UA on some paths; a browser UA sails through (proven in StoreProbe.py).
         try { c.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64)"); } catch { }
         return c;
