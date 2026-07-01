@@ -2386,6 +2386,10 @@ internal sealed class MainWindow : Form
         _vndb.Expanded = _vndbExpanded;
         _raCard?.HidePanel();   // clean slate at selection — the debounced ScheduleMedia tick (re)fills it from the raid
         _storeAchCard?.HidePanel();   // same: refilled from the store (GOG) at the debounced tick
+        // New game → scroll the detail pane to the top BEFORE relaying out. RelayoutDetailCore positions
+        // the grid at an absolute (0,0), so it must start from an unscrolled panel; otherwise a tall
+        // previous game (e.g. a big achievements grid) leaves a scroll offset and the grid is mispositioned.
+        if (_detailHost != null) { try { _detailHost.AutoScrollPosition = new Point(0, 0); } catch { } }
         RelayoutDetail();
 
         _notes.Text = S(g.Notes).Replace("\n", "\r\n");
@@ -2824,9 +2828,10 @@ internal sealed class MainWindow : Form
             _storeAchCard.Expanded = _storeAchExpanded;
         }
 
-        // Optimistic first paint from any cache; the live read confirms/updates on a bg thread.
+        // Optimistic first paint from cache: show it if it has achievements, hide if it cached "none"
+        // (total 0), else a brief "loading" until the live read lands.
         var cached0 = readCache();
-        if (cached0 != null && cached0.total > 0) ShowWith(cached0);
+        if (cached0 != null) { if (cached0.total > 0) ShowWith(cached0); else _storeAchCard.HidePanel(); }
         else _storeAchCard.ShowLoading();
 
         System.Threading.Tasks.Task.Run(() =>
@@ -2840,8 +2845,10 @@ internal sealed class MainWindow : Form
                 BeginInvoke(new Action(() =>
                 {
                     if (token != _detailsLoadToken) return;   // selection moved on
-                    if (data != null && data.total > 0) ShowWith(data);
-                    else if (cached0 == null) _storeAchCard.HidePanel();
+                    // Fetch landed: show when it has achievements, otherwise hide (0 = this game has none).
+                    if (data != null) { if (data.total > 0) ShowWith(data); else _storeAchCard.HidePanel(); }
+                    // Fetch failed (null): keep a non-empty cache already shown; otherwise hide (never stay on "loading").
+                    else if (!(cached0 != null && cached0.total > 0)) _storeAchCard.HidePanel();
                 }));
             }
             catch { }

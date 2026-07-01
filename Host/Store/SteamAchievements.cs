@@ -184,7 +184,15 @@ internal static class SteamAchievements
         // One deadline for the WHOLE web run so the sequential calls can never add up to a long freeze.
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         var ct = cts.Token;
-        var (defs, order) = FetchSchema(appId, ct);      // full achievement set + icons (web, key)
+        var (defs, order, schemaOk) = FetchSchema(appId, ct);   // full achievement set + icons (web, key)
+        // The game genuinely has no Steam achievements (schema returned, but empty) → resolve to an empty
+        // card at once. Crucially, do NOT fall through to the Steamworks helper (it would spawn a process
+        // and sit for seconds only to confirm 0 — the "stuck on loading" symptom).
+        if (schemaOk && defs.Count == 0)
+        {
+            Console.WriteLine($"[steamach] {appId}: no achievements (schema empty)");
+            return new StoreAchCache { store = "Steam", appId = appId, ver = CacheVer, fetchedAt = DateTime.UtcNow.ToString("o"), total = 0 };
+        }
         var rarity = FetchGlobalPercents(appId, ct);     // rarity % (web, no key)
 
         // Unlock state: WEB first (Steam-closed OK), then the Steamworks helper (Steam running).
@@ -268,17 +276,18 @@ internal static class SteamAchievements
     }
 
     // GetSchemaForGame → full achievement definitions (name/desc/icon/icongray/hidden), preserving order.
-    private static (Dictionary<string, Def> defs, List<string> order) FetchSchema(string appId, CancellationToken ct)
+    // `ok` = the request succeeded (HTTP 200); with ok && defs.Count==0 the game simply has no achievements.
+    private static (Dictionary<string, Def> defs, List<string> order, bool ok) FetchSchema(string appId, CancellationToken ct)
     {
         var defs = new Dictionary<string, Def>(StringComparer.Ordinal);
         var order = new List<string>();
         var key = ApiKey();
-        if (key == null) return (defs, order);
+        if (key == null) return (defs, order, false);
         try
         {
             string url = $"https://api.steampowered.com/ISteamUserStats/GetSchemaForGame/v2/?key={key}&appid={appId}&l={Lang()}";
             var body = GetJson(url, ct);
-            if (body == null) return (defs, order);
+            if (body == null) return (defs, order, false);
             using var doc = JsonDocument.Parse(body);
             if (doc.RootElement.TryGetProperty("game", out var game)
                 && game.TryGetProperty("availableGameStats", out var ags)
@@ -292,9 +301,9 @@ internal static class SteamAchievements
                                        NullIfEmpty(Str(e, "icon")), NullIfEmpty(Str(e, "icongray")), hidden);
                     order.Add(nm);
                 }
+            return (defs, order, true);   // parsed OK (defs may be empty = no achievements)
         }
-        catch (Exception ex) { Console.WriteLine($"[steamach] schema {appId} failed: {ex.Message}"); }
-        return (defs, order);
+        catch (Exception ex) { Console.WriteLine($"[steamach] schema {appId} failed: {ex.Message}"); return (defs, order, false); }
     }
 
     // GetGlobalAchievementPercentagesForApp → rarity % per achievement (no key required).
