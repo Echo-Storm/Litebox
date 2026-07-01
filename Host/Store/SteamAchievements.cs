@@ -130,11 +130,8 @@ internal static class SteamAchievements
         return _lang!;
     }
 
-    // ── cache: Core\store-ach-cache\steam-<appId>.json ───────────────────────────────────────
-    private static string CacheDir
-    {
-        get { var d = Path.Combine(AppContext.BaseDirectory, "store-ach-cache"); try { Directory.CreateDirectory(d); } catch { } return d; }
-    }
+    // ── cache: Core\litebox\store-ach-cache\steam-<appId>.json ───────────────────────────────
+    private static string CacheDir => LiteBoxPaths.Dir("store-ach-cache");
     private static string CacheFile(string appId) => Path.Combine(CacheDir, "steam-" + appId + ".json");
 
     public static StoreAchCache? ReadCache(string appId)

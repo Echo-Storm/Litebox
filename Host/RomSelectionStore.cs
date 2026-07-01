@@ -24,7 +24,7 @@ internal static class RomSelectionStore
     private static readonly object _gate = new();
     private static Dictionary<string, Dictionary<string, Entry>>? _map;   // gameId → verKey → entry
 
-    private static string FilePath => Path.Combine(AppContext.BaseDirectory, "rom-selection.json");
+    private static string FilePath => LiteBoxPaths.File("rom-selection.json");
     private static string VerKey(string? appId) => string.IsNullOrEmpty(appId) ? "__default__" : appId!;
 
     private static void EnsureLoaded()

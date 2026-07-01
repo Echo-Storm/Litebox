@@ -204,7 +204,7 @@ internal static class RaPlatformMap
     // ── User overrides: platform name → RAHasher key ("" = explicit none). Only diffs-from-auto stored. ──
     private static Dictionary<string, string> _overrides;
     private static readonly object _ovLock = new();
-    private static string OverridesFile => Path.Combine(AppContext.BaseDirectory, "ra-platform-overrides.json");
+    private static string OverridesFile => LiteBoxPaths.File("ra-platform-overrides.json");
 
     private static Dictionary<string, string> Overrides()
     {

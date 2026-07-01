@@ -72,11 +72,8 @@ internal static class RaService
     /// native RA fallback (RaCatalogLite) so it doesn't re-parse Settings.xml.</summary>
     internal static string? ApiKey { get { ReadSettings(); return _key; } }
 
-    // ── cache: Core\ra-cache\<raid>.json ─────────────────────────────────────────────────────
-    private static string CacheDir
-    {
-        get { var d = Path.Combine(AppContext.BaseDirectory, "ra-cache"); try { Directory.CreateDirectory(d); } catch { } return d; }
-    }
+    // ── cache: Core\litebox\ra-cache\<raid>.json ─────────────────────────────────────────────
+    private static string CacheDir => LiteBoxPaths.Dir("ra-cache");
     private static string CacheFile(int raid) => Path.Combine(CacheDir, raid + ".json");
 
     public static RaGameCache? ReadCache(int raid)

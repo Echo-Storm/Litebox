@@ -161,22 +161,11 @@ internal static class Installer
         sb.AppendLine("echo Uninstalling LiteBox (ExtendDB + shared ThirdParty preserved)...");
         sb.AppendLine("taskkill /IM LiteBox.exe /F >nul 2>&1");
         sb.AppendLine("ping -n 2 127.0.0.1 >nul");
-        sb.AppendLine("del /q \"LiteBox.exe\" 2>nul");
+        sb.AppendLine("del /q \"LiteBox.exe\" 2>nul");                 // root re-launcher
         sb.AppendLine("del /q \"litebox*.log\" 2>nul");
-        sb.AppendLine("del /q \"Core\\LiteBox.exe\" 2>nul");
-        sb.AppendLine("del /q \"Core\\litebox*.log\" 2>nul");
-        sb.AppendLine("del /q \"Core\\LiteBox.ini\" 2>nul");
-        sb.AppendLine("del /q \"Core\\LiteBox.pending\" 2>nul");
-        sb.AppendLine("del /q \"Core\\LiteBox.pending.db\" 2>nul");
-        sb.AppendLine("del /q \"Core\\LiteBox.pending.db-wal\" 2>nul");
-        sb.AppendLine("del /q \"Core\\LiteBox.pending.db-shm\" 2>nul");
-        sb.AppendLine("del /q \"Core\\whitelist.txt\" 2>nul");
-        sb.AppendLine("del /q \"Core\\ra-platform-overrides.json\" 2>nul");
-        sb.AppendLine("rmdir /s /q \"Core\\ra-cache\" 2>nul");
-        sb.AppendLine("rmdir /s /q \"Core\\ra-badges\" 2>nul");
-        sb.AppendLine("rmdir /s /q \"Core\\store-ach-cache\" 2>nul");
-        sb.AppendLine("rmdir /s /q \"Core\\store-ach-badges\" 2>nul");
-        sb.AppendLine("del /q \"ThirdParty\\Steam\\steam_api64.dll\" 2>nul");
+        sb.AppendLine("del /q \"Core\\LiteBox.exe\" 2>nul");           // the host binary
+        sb.AppendLine("rmdir /s /q \"Core\\litebox\" 2>nul");         // all LiteBox-created files/dirs live here
+        sb.AppendLine("del /q \"ThirdParty\\Steam\\steam_api64.dll\" 2>nul");   // LiteBox-only ThirdParty native
         sb.AppendLine("rmdir \"ThirdParty\\Steam\" 2>nul");
         sb.AppendLine("echo Done.");
         sb.AppendLine("pause");

@@ -14,7 +14,7 @@ internal static class StoreTrace
 {
     private static readonly object _lock = new();
     private static string? _path;
-    private static string Path_ => _path ??= System.IO.Path.Combine(AppContext.BaseDirectory, "litebox-store.log");
+    private static string Path_ => _path ??= LiteBoxPaths.File("litebox-store.log");
 
     public static void Log(string msg)
     {

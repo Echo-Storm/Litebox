@@ -1,0 +1,37 @@
+// Every file/folder LiteBox CREATES at runtime lives under <LB>\Core\litebox\ (config, write-back
+// journal, RA/store caches + badges, logs, per-session picks) so it doesn't clutter Core. The exe itself
+// stays at Core\LiteBox.exe — its path math derives the LB root from being DIRECTLY in Core, and the
+// AssemblyLoadContext resolver / lbRoot derivation keep using AppContext.BaseDirectory (= Core), NOT this
+// folder. Only LiteBox-owned data goes here.
+
+#nullable enable
+
+using System;
+using System.IO;
+
+namespace LbApiHost.Host;
+
+internal static class LiteBoxPaths
+{
+    /// <summary><LB>\Core\litebox — the single home for everything LiteBox writes. Created on demand.</summary>
+    public static string Data
+    {
+        get
+        {
+            string d = Path.Combine(AppContext.BaseDirectory, "litebox");
+            try { Directory.CreateDirectory(d); } catch { }
+            return d;
+        }
+    }
+
+    /// <summary><LB>\Core\litebox\<paramref name="name"/> (a file — parent dir ensured).</summary>
+    public static string File(string name) => Path.Combine(Data, name);
+
+    /// <summary><LB>\Core\litebox\<paramref name="name"/> (a directory — created on demand).</summary>
+    public static string Dir(string name)
+    {
+        string d = Path.Combine(Data, name);
+        try { Directory.CreateDirectory(d); } catch { }
+        return d;
+    }
+}

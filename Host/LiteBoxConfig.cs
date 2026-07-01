@@ -24,18 +24,8 @@ internal sealed class LiteBoxConfig
         else WriteTemplate();
     }
 
-    /// <summary>LiteBox.ini next to the running exe (falls back to the app base dir).</summary>
-    public static LiteBoxConfig LoadForExe()
-    {
-        string ini;
-        try
-        {
-            var exe = Environment.ProcessPath ?? System.Diagnostics.Process.GetCurrentProcess().MainModule!.FileName;
-            ini = Path.ChangeExtension(exe, ".ini");
-        }
-        catch { ini = Path.Combine(AppContext.BaseDirectory, "LiteBox.ini"); }
-        return new LiteBoxConfig(ini);
-    }
+    /// <summary>LiteBox.ini under Core\litebox\ (the single home for LiteBox-created files).</summary>
+    public static LiteBoxConfig LoadForExe() => new LiteBoxConfig(LiteBoxPaths.File("LiteBox.ini"));
 
     private void Load()
     {

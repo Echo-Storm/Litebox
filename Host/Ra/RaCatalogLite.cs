@@ -37,10 +37,7 @@ internal static class RaCatalogLite
     // In-process memo: consoleId → (hash → raid). Avoids re-reading the file on every lookup.
     private static readonly Dictionary<int, Dictionary<string, int>> _memo = new();
 
-    private static string CacheDir
-    {
-        get { var d = Path.Combine(AppContext.BaseDirectory, "ra-cache"); try { Directory.CreateDirectory(d); } catch { } return d; }
-    }
+    private static string CacheDir => LiteBoxPaths.Dir("ra-cache");
     private static string CacheFile(int consoleId) => Path.Combine(CacheDir, $"catalog-{consoleId}.json");
 
     /// <summary>The raid (RA game id) for a ROM hash on a console, or 0 when not in the catalogue. BLOCKING

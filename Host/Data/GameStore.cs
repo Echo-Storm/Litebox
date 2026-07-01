@@ -190,9 +190,9 @@ internal sealed class GameStore
     // ordered event and flushed to the XMLs at a safe time. See OpLog. Opened in Load().
     private OpLog _oplog;
     private string _opDbOverride;   // set only by the self-test, to isolate from the real log
-    private string OpDbPath => _opDbOverride ?? Path.Combine(AppContext.BaseDirectory, "LiteBox.pending.db");
+    private string OpDbPath => _opDbOverride ?? LiteBoxPaths.File("LiteBox.pending.db");
     // Legacy positional journal (pre-WAL); migrated into the op-log + deleted on first boot.
-    private string LegacyJournalPath => Path.Combine(AppContext.BaseDirectory, "LiteBox.pending");
+    private string LegacyJournalPath => LiteBoxPaths.File("LiteBox.pending");
 
     /// <summary>Read-only mode (config, default true): NOTHING is ever written to disk — neither
     /// the journal nor the Platform XMLs. Mutations update the in-memory Rows only, for this run.</summary>

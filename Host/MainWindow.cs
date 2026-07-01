@@ -1299,7 +1299,7 @@ internal sealed class MainWindow : Form
     }
 
     // ── LiteBox cache maintenance (Options → Caches) ─────────────────────────────────────────
-    // Achievement caches LiteBox keeps under Core\ : the normalised JSON (ra-cache / store-ach-cache)
+    // Achievement caches LiteBox keeps under Core\litebox\ : the normalised JSON (ra-cache / store-ach-cache)
     // and the downloaded badge images (ra-badges / store-ach-badges).
     private static readonly string[] _achCacheDirs = { "ra-cache", "ra-badges", "store-ach-cache", "store-ach-badges" };
 
@@ -1310,7 +1310,7 @@ internal sealed class MainWindow : Form
         {
             try
             {
-                var dir = Path.Combine(AppContext.BaseDirectory, d);
+                var dir = Path.Combine(LiteBoxPaths.Data, d);
                 if (!Directory.Exists(dir)) continue;
                 foreach (var file in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
                 { f++; try { b += new FileInfo(file).Length; } catch { } }
@@ -1323,7 +1323,7 @@ internal sealed class MainWindow : Form
     private static void ClearAchCache()
     {
         foreach (var d in _achCacheDirs)
-            try { var dir = Path.Combine(AppContext.BaseDirectory, d); if (Directory.Exists(dir)) Directory.Delete(dir, true); }
+            try { var dir = Path.Combine(LiteBoxPaths.Data, d); if (Directory.Exists(dir)) Directory.Delete(dir, true); }
             catch { }
     }
 

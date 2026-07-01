@@ -56,10 +56,7 @@ internal static class StoreBadges
         return c;
     }
 
-    private static string Dir
-    {
-        get { var d = Path.Combine(AppContext.BaseDirectory, "store-ach-badges"); try { Directory.CreateDirectory(d); } catch { } return d; }
-    }
+    private static string Dir => LiteBoxPaths.Dir("store-ach-badges");
 
     /// <summary>Local path to the cached badge for <paramref name="url"/>, downloading it once if absent.
     /// Null when the URL is empty or the download fails. BLOCKING — call off the UI thread.</summary>
