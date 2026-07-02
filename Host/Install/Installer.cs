@@ -41,7 +41,7 @@ internal static class Installer
                           && File.Exists(Path.Combine(selfDir, "LaunchBox.exe"));
             bool devBuild = File.Exists(Path.Combine(selfDir, "LiteBox.dll"));
 
-#if SELF_CONTAINED_BUILD
+#if FULL_INSTALLER
             // Silent scripted install: --install "<LaunchBox root>" (no UI, no launch) — checked first so it
             // works from anywhere, even from within Core.
             int ii = Array.FindIndex(args, a => a.Equals("--install", StringComparison.OrdinalIgnoreCase));
@@ -78,8 +78,10 @@ internal static class Installer
             LaunchCoreHost(root, args);
             return true;
 #else
-            // Framework-dependent "zip" build: Core-only. It can't self-install (no bundled runtime, no
-            // embedded payload), so if it isn't in place just tell the user where it belongs.
+            // Light "zip" build: Core-only. It shares the .NET runtime that already lives in LaunchBox\Core
+            // (its runtime DLLs are stripped from the zip), so it only runs from Core — and it never self-
+            // installs. If it isn't in place, just tell the user where it belongs. (In practice, extracted
+            // outside Core it won't even start — no runtime there — hence "extract into Core".)
             if (inCore || devBuild) return false;
             MessageBox.Show(
                 "This LiteBox needs to live in your LaunchBox \"Core\" folder.\n\n" +
@@ -96,7 +98,7 @@ internal static class Installer
         }
     }
 
-#if SELF_CONTAINED_BUILD
+#if FULL_INSTALLER
     // Copy MYSELF to <root>\Core\LiteBox.exe (the host) and to <root>\LiteBox.exe (the root re-launcher).
     // Never copies over itself. (Uninstall is done in-app from LiteBox's Options — no .bat is written.)
     private static void InstallToCore(string root, string selfPath)

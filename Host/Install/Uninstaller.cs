@@ -62,8 +62,9 @@ internal static class Uninstaller
         sb.AppendLine(":wait");
         sb.AppendLine("tasklist /FI \"IMAGENAME eq LiteBox.exe\" 2>nul | find /I \"LiteBox.exe\" >nul && ( ping -n 2 127.0.0.1 >nul & goto wait )");
 
-        // Always: LiteBox-exclusive.
-        sb.AppendLine($"del /q \"{core}\\LiteBox.exe\" 2>nul");
+        // Always: LiteBox-exclusive. (The light "zip" build also drops LiteBox.dll + the two .json next
+        // to LiteBox.exe in Core — the standalone is a single file, so those are just absent then.)
+        sb.AppendLine($"del /q \"{core}\\LiteBox.exe\" \"{core}\\LiteBox.dll\" \"{core}\\LiteBox.deps.json\" \"{core}\\LiteBox.runtimeconfig.json\" 2>nul");
         sb.AppendLine($"rmdir /s /q \"{core}\\litebox\" 2>nul");
         sb.AppendLine($"del /q \"{root}\\LiteBox.exe\" 2>nul");
         sb.AppendLine($"del /q \"{root}\\LiteBox uninstall.bat\" 2>nul");

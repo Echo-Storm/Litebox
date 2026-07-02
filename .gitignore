@@ -3,6 +3,7 @@ bin/
 obj/
 publish*/
 Launcher/publish*/
+release/
 
 # IDE
 .vs/

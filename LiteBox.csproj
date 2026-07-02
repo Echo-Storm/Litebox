@@ -4,7 +4,16 @@
     <!-- WinExe: no console window by default (transparent when launched by the launcher); a console
          is allocated at runtime only for the debug / headless flags (see Program.cs). -->
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net9.0-windows</TargetFramework>
+    <!-- DUAL-TARGET: LaunchBox 13.x runs on .NET 9; the newer alpha moved to .NET 10. LiteBox borrows LB's
+         SDK (Unbroken.LaunchBox.Plugins) at runtime, so it must run on the SAME runtime family — hence one
+         build per TFM. Publish selects one with -f (see build-release.ps1 / BUILD-RELEASE.md). A net10
+         SELF-CONTAINED build also runs on a .NET 9 LB (net9 SDK loads fine on a net10 runtime), but a net10
+         framework-dependent zip needs a net10 runtime present — so we ship both TFM sets. -->
+    <TargetFrameworks>net9.0-windows;net10.0-windows</TargetFrameworks>
+    <!-- Benign here: the SDK/Magick/Sqlite refs below are version-agnostic (Private=false, resolved from
+         LB\Core at runtime). The net9 build referencing the net10 LB\Core copies raises MSB3277 version
+         conflicts that resolve to the net9 framework — demote them to messages to keep the build clean. -->
+    <MSBuildWarningsAsMessages>MSB3277</MSBuildWarningsAsMessages>
     <Nullable>disable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWindowsForms>true</UseWindowsForms>
@@ -22,8 +31,11 @@
          (Program.cs then Host\Install\Installer). Drop it at the LaunchBox root or in Core and it
          self-installs (copies itself to Core, unpacks the EMBEDDED native payload into ThirdParty\).
          The old separate LiteBoxLauncher project is gone (merged here).
-         Publish self-contained, RID win-x64, single-file:
-           dotnet publish -c Release -r win-x64 -p:SelfContained=true -p:PublishSingleFile=true
+         Four release artifacts (2 TFM x 2 forms) are produced by build-release.ps1 — see BUILD-RELEASE.md.
+         BOTH forms are SELF-CONTAINED (-p:SelfContained=true); $(LiteBoxDist) picks the shape:
+           standalone: dotnet publish ... -f <tfm> -p:PublishSingleFile=true  -p:LiteBoxDist=standalone  (single-file, payload EMBEDDED, self-installing)
+           light:      dotnet publish ... -f <tfm> -p:PublishSingleFile=false -p:LiteBoxDist=light        (then STRIP the runtime DLLs so it shares LaunchBox\Core's runtime; payload loose)
+         where <tfm> is net9.0-windows or net10.0-windows.
          PublishSingleFile / IncludeNativeLibrariesForSelfExtract only take effect on publish, so a plain
          `dotnet build` stays a fast framework-dependent dev build (self-install skips it: it detects the
          loose LiteBox.dll next to a dev exe and just boots). -->
@@ -31,24 +43,38 @@
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
   </PropertyGroup>
 
-  <!-- Self-contained builds define SELF_CONTAINED_BUILD (installer/relocate active + payload embedded) and
-       compress the bundle. The framework-dependent "zip" build (published self-contained=false) does NOT —
-       so the Installer runs in Core-only mode and the payload ships loose in the zip instead (compression
-       isn't supported for framework-dependent single-file). -->
-  <PropertyGroup Condition="'$(SelfContained)' == 'true'">
-    <DefineConstants>$(DefineConstants);SELF_CONTAINED_BUILD</DefineConstants>
+  <!-- Distribution flavor ($(LiteBoxDist), set at publish by build-release.ps1). BOTH forms are
+       self-contained; this block only shapes the STANDALONE:
+         standalone    -> define FULL_INSTALLER (self-install/relocate active), embed the payload (ItemGroup
+                          below) and compress the single-file bundle.
+         light / unset -> none of that: the Installer runs Core-only, the payload ships loose in the zip, and
+                          (light) the runtime DLLs are stripped after publish so it borrows LaunchBox\Core's. -->
+  <PropertyGroup Condition="'$(LiteBoxDist)' == 'standalone'">
+    <DefineConstants>$(DefineConstants);FULL_INSTALLER</DefineConstants>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
   </PropertyGroup>
 
+  <!-- Per-TFM SDK compile reference. A net9 project CANNOT reference LB's net10 build of
+       Unbroken.LaunchBox.Plugins (CS1705: that build pulls System.Runtime 10.0.0.0). So the net9 target
+       compiles against a .NET 9 LaunchBox's copy and the net10 target against the primary (net10) LB\Core.
+       Both are Private=false / resolved by simple name at runtime, so the exact build version only matters
+       for the compile. Override the roots with -p:Lb9Root=<.NET 9 LaunchBox> / -p:Lb10Root=<.NET 10 LaunchBox>
+       (defaults: the kept net9 backup, and the primary LB beside the repo). build-release.ps1 reads these
+       same roots to derive each build's version label. Magick / Sqlite refs below are net8 → they satisfy
+       BOTH targets, so they need no split. -->
+  <PropertyGroup>
+    <Lb9Root  Condition="'$(Lb9Root)' == ''">G:\LB</Lb9Root>
+    <Lb10Root Condition="'$(Lb10Root)' == ''">$(MSBuildThisFileDirectory)..\..\..\LB</Lb10Root>
+    <SdkRefDll Condition="'$(TargetFramework)' == 'net9.0-windows'">$(Lb9Root)\Core\Unbroken.LaunchBox.Plugins.dll</SdkRefDll>
+    <SdkRefDll Condition="'$(SdkRefDll)' == ''">$(Lb10Root)\Core\Unbroken.LaunchBox.Plugins.dll</SdkRefDll>
+  </PropertyGroup>
+
   <ItemGroup>
-    <!-- The real LaunchBox plugin SDK — the exact interface contract we
-         implement. Copied local so the host runs standalone. -->
-    <!-- Compile-time only. Private=false → NOT copied to output and NOT pinned in
-         deps.json, so the host resolves whatever Unbroken.LaunchBox.Plugins version
-         lives in LB\Core at runtime (version-agnostic, like a plugin). The HintPath
-         here is just the compile reference. -->
+    <!-- The real LaunchBox plugin SDK — the exact interface contract we implement (compile-time only,
+         Private=false → not copied / not pinned in deps.json; the host resolves whatever version lives in
+         LB\Core at runtime, version-agnostic like a plugin). Reference path is per-TFM (see above). -->
     <Reference Include="Unbroken.LaunchBox.Plugins">
-      <HintPath>..\..\..\LB\Core\Unbroken.LaunchBox.Plugins.dll</HintPath>
+      <HintPath>$(SdkRefDll)</HintPath>
       <Private>false</Private>
     </Reference>
     <!-- Magick.NET — compile-time only (Private=false): used ONLY to decode WebP
@@ -88,11 +114,11 @@
     <EmbeddedResource Include="litebox.ico" />
   </ItemGroup>
 
-  <!-- Native payload. Embedded as resources ONLY for the self-contained build ($(SelfContained)); the
-       framework-dependent "zip" ships them loose under Core\litebox\thirdparty\ instead, so its exe stays
-       small. LogicalName = the SOURCE filename; the src to ThirdParty mapping lives in NativeInstaller.Payload
+  <!-- Native payload. Embedded as resources ONLY for the STANDALONE build ($(LiteBoxDist)=standalone); the
+       light "zip" ships them loose under Core\litebox\thirdparty\ instead, so its exe stays small.
+       LogicalName = the SOURCE filename; the src to ThirdParty mapping lives in NativeInstaller.Payload
        (keep the two lists in sync). -->
-  <ItemGroup Condition="'$(SelfContained)' == 'true'">
+  <ItemGroup Condition="'$(LiteBoxDist)' == 'standalone'">
     <EmbeddedResource Include="thirdparty\Everything64.dll.api"><LogicalName>natives/Everything64.dll.api</LogicalName></EmbeddedResource>
     <EmbeddedResource Include="thirdparty\Magick.Native-Q16-x64.dll.api"><LogicalName>natives/Magick.Native-Q16-x64.dll.api</LogicalName></EmbeddedResource>
     <EmbeddedResource Include="thirdparty\RahasherExtendDB.exe"><LogicalName>natives/RahasherExtendDB.exe</LogicalName></EmbeddedResource>

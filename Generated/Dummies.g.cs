@@ -104,6 +104,10 @@ namespace LbApiHost.Generated
   }
   public partial class DummyEmulator : global::Unbroken.LaunchBox.Plugins.Data.IEmulator
   {
+    // Added for the .NET 10 LaunchBox SDK (new IEmulator members; harmless extra props on the net9 SDK).
+    public virtual global::System.Int32 StartupScreenPostLaunchDisplayTime { get; set; }
+    public virtual global::System.Boolean MonitorStartupShutdownWithProcess { get; set; }
+    public virtual global::System.Boolean ForceFrontendFocusOnShutdown { get; set; }
     public virtual global::System.String ApplicationPath { get; set; }
     public virtual global::System.String CommandLine { get; set; }
     public virtual global::System.String DefaultPlatform { get; set; }
@@ -144,6 +148,9 @@ namespace LbApiHost.Generated
   }
   public partial class DummyGame : global::Unbroken.LaunchBox.Plugins.Data.IGame
   {
+    // Added for the .NET 10 LaunchBox SDK (new IGame members; harmless extra props on the net9 SDK).
+    public virtual global::System.Int32 StartupScreenPostLaunchDisplayTime { get; set; }
+    public virtual global::System.Boolean MonitorStartupShutdownWithProcess { get; set; }
     public virtual global::System.Drawing.Image RatingImage { get; set; }
     public virtual global::System.String ScreenshotImagePath { get; set; }
     public virtual global::System.String FrontImagePath { get; set; }
