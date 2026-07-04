@@ -316,6 +316,28 @@ internal static class HostBoot
                     catch (Exception ex) { Console.WriteLine("OnSelected threw: " + ex); }
                 });
             }
+            string installEmu = GetArg(args, "--install-emu");
+            if (!string.IsNullOrWhiteSpace(installEmu))
+            {
+                string root = Media.MediaResolver.LbRoot ?? AppContext.BaseDirectory;
+                string logPath = System.IO.Path.Combine(root, "EmuInstall.LiteBox.log");
+                try { System.IO.File.Delete(logPath); } catch { }
+                void EL(string s) { Console.WriteLine(s); try { System.IO.File.AppendAllText(logPath, s + "\r\n"); } catch { } }
+                EL($"==== EmuInstall '{installEmu}' — {DateTime.Now:yyyy-MM-dd HH:mm:ss} ====");
+                // The arg is the emulator NAME (RetroArch, ScummVM…), not a platform — match by name first.
+                var plugin = EmuInstall.FindPluginByName(installEmu) ?? EmuInstall.FindPlugin(installEmu);
+                if (plugin == null) EL($"[emuinstall] NO integration plugin named/supporting '{installEmu}' (loaded emu plugins: {EmuPlugins.All.Count})");
+                else
+                {
+                    EL($"[emuinstall] plugin = {plugin.GetType().FullName} (EmulatorName='{plugin.EmulatorName}')");
+                    // Empty platform = general install (the plugin uses its own LocalDb platform set); passing the
+                    // emulator name as a platform would make RetroArch add a bogus "RetroArch" EmulatorPlatform.
+                    var (ok, message, id) = EmuInstall.Install(plugin, "",
+                        progress: (m, f) => Console.WriteLine($"  … {m} {(int)(f * 100)}%"), cancel: null, log: EL);
+                    EL($"[emuinstall] RESULT ok={ok} id={id ?? "-"} :: {message}");
+                }
+                EL("==== DONE ====");
+            }
             if (args.Contains("--play"))
             {
                 // Prefer a game that resolves an emulator (more representative); else the first.

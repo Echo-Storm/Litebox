@@ -217,7 +217,9 @@ internal static class EditEmulatorWindow
                     emu,
                     version,
                     false);
-                resp = plugin.InstallEmulator(args);
+                // Shimmed: inject a bare Root.DataManager + configure LocalDb for the call so plugins whose
+                // reinstall path touches the core (RetroArch/Dolphin/…) don't NRE under LiteBox.
+                resp = EmuInstall.InstallEmulatorShimmed(plugin, args, s => Console.WriteLine(s));
             }
             catch (Exception ex) { err = ex; }
             try

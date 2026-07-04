@@ -24,8 +24,14 @@ internal sealed class AddEmulatorWindow : LiteBoxForm
     private readonly TextBox _cmd;
     private readonly CheckBox _noQuotes, _noSpace, _hideConsole, _fileNameOnly, _autoExtract;
     private readonly Label _hint;
+    private readonly Button _download;
     private readonly CheckedListBox _platforms;
     private List<EmuPresetPlatform> _platformRows = new();
+
+    // Set when the "Download" button ran an emulator plugin's InstallEmulator (on a mirrored library): the
+    // core Emulator it produced + the game/add-app assignment its own logic chose. On OK we translate the
+    // whole thing (all fields + AHK + platforms + assignment) instead of the minimal set.
+    private PluginInstallResult? _pluginResult;
 
     /// <summary>The emulator created on OK (null if cancelled).</summary>
     public IEmulator? Created { get; private set; }
@@ -64,6 +70,15 @@ internal sealed class AddEmulatorWindow : LiteBoxForm
 
         Lbl(body, S(8), y, "Name");
         _name = Txt(body, new Point(S(8), y + S(20)), S(320));
+        _download = new Button
+        {
+            Text = "Download", Location = new Point(S(340), y + S(18)), Size = new Size(S(100), S(26)),
+            FlatStyle = FlatStyle.Flat, BackColor = LiteBoxTheme.Panel2, ForeColor = LiteBoxTheme.Fg,
+            FlatAppearance = { BorderSize = 0 }, Font = new Font("Segoe UI", 8.5f), Enabled = false,
+        };
+        _download.Click += (_, _) => StartDownload();
+        body.Controls.Add(_download);
+        _name.TextChanged += (_, _) => UpdateDownloadEnabled();
         y += S(52);
 
         Lbl(body, S(8), y, "Application Path");
@@ -135,6 +150,55 @@ internal sealed class AddEmulatorWindow : LiteBoxForm
         }
     }
 
+    // Download is offered only when the typed name matches an emulator-integration plugin (ScummVM, RetroArch…)
+    // AND the obfuscated core is shim-able here — exactly LaunchBox's own gating.
+    private void UpdateDownloadEnabled()
+    {
+        bool can = false;
+        try { can = EmuInstall.CanShim && EmuInstall.FindPluginByName(_name.Text.Trim()) != null; } catch { }
+        _download.Enabled = can;
+    }
+
+    private void StartDownload()
+    {
+        var name = _name.Text.Trim();
+        var plugin = EmuInstall.FindPluginByName(name);
+        if (plugin == null) return;
+        _download.Enabled = false; _download.Text = "…";
+        _hint.Text = "Downloading " + name + "…";
+        // Empty platform = general install: the plugin uses its own LocalDb platform set. Passing the emulator
+        // NAME as a platform would make e.g. RetroArch add a bogus "RetroArch" EmulatorPlatform.
+        var platform = "";
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            var res = EmuInstall.RunPluginInstall(plugin, platform,
+                progress: (m, f) => { try { BeginInvoke(new Action(() => _hint.Text = $"{m} {(int)(f * 100)}%")); } catch { } },
+                cancel: null, log: s => Console.WriteLine(s));
+            try { BeginInvoke(new Action(() => DownloadDone(res))); } catch { }
+        });
+    }
+
+    private void DownloadDone(PluginInstallResult res)
+    {
+        _download.Text = "Download"; _download.Enabled = true;
+        if (!res.Ok || res.Core == null)
+        {
+            _hint.Text = "";
+            MessageBox.Show(this, "Download failed:\n\n" + res.Message, "Download Emulator", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        _pluginResult = res;
+        var core = res.Core;
+        try { _path.Text = core.ApplicationPath ?? ""; } catch { }
+        try { _cmd.Text = core.CommandLine ?? ""; } catch { }
+        try { _hideConsole.Checked = core.HideConsole; } catch { }
+        try { _autoExtract.Checked = core.AutoExtract; } catch { }
+        try { _noQuotes.Checked = core.NoQuotes; } catch { }
+        try { _noSpace.Checked = core.NoSpace; } catch { }
+        try { _fileNameOnly.Checked = core.FileNameWithoutExtensionAndPath; } catch { }
+        _hint.Text = $"Downloaded — click Add to create the emulator ({res.GamesToAssign.Count} game(s) will be assigned).";
+    }
+
     private void BrowseExe()
     {
         using var dlg = new OpenFileDialog { Filter = "Executables (*.exe)|*.exe|All files (*.*)|*.*" };
@@ -174,6 +238,27 @@ internal sealed class AddEmulatorWindow : LiteBoxForm
             MessageBox.Show(this, "Could not create the emulator (data manager unavailable).", "Add Emulator", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return false;
         }
+
+        // Downloaded via a plugin: translate the whole result (every field + AHK + platforms + the plugin's
+        // own game/add-app assignment), then let the user's visible edits win on the shown fields. Skip the
+        // preset platform loop.
+        if (_pluginResult != null)
+        {
+            try { EmuInstall.ApplyToHost(_pluginResult, e, s => Console.WriteLine(s)); }
+            catch (Exception ex) { Console.WriteLine("[addemu] ApplyToHost failed: " + ex.Message); }
+            Set(() => e.Title = name);
+            Set(() => e.ApplicationPath = _path.Text.Trim());
+            Set(() => e.CommandLine = _cmd.Text.Trim());
+            Set(() => e.HideConsole = _hideConsole.Checked);
+            Set(() => e.AutoExtract = _autoExtract.Checked);
+            Set(() => e.NoQuotes = _noQuotes.Checked);
+            Set(() => e.NoSpace = _noSpace.Checked);
+            Set(() => e.FileNameWithoutExtensionAndPath = _fileNameOnly.Checked);
+            try { PluginHelper.DataManager?.Save(false); } catch { }
+            Created = e;
+            return true;
+        }
+
         Set(() => e.Title = name);
         Set(() => e.ApplicationPath = _path.Text.Trim());
         Set(() => e.CommandLine = _cmd.Text.Trim());
