@@ -87,6 +87,20 @@ internal static class OptionRows
                     applies.Add(() => { if (cmb.SelectedIndex >= 0 && cmb.SelectedIndex < values.Length) ApplyIfChanged(it, values[cmb.SelectedIndex]); });
                     break;
                 }
+                case OptionKind.Button:
+                {
+                    var btn = new Button
+                    {
+                        Text = it.Label, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                        Padding = new Padding(S(12), S(3), S(12), S(3)), Margin = new Padding(0, S(2), 0, S(2)),
+                        FlatStyle = FlatStyle.Flat, BackColor = LiteBoxTheme.Panel2, ForeColor = LiteBoxTheme.Fg,
+                        FlatAppearance = { BorderSize = 0 }, Font = new Font("Segoe UI", 9f),
+                    };
+                    var onClick = it.OnClick;
+                    btn.Click += (_, _) => onClick?.Invoke();
+                    row.Controls.Add(btn);
+                    break;
+                }
             }
 
             if (it.NoImpact)

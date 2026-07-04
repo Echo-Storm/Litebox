@@ -1385,6 +1385,8 @@ internal sealed class MainWindow : Form, IMessageFilter
                 + "more games fit on screen. Wrapping is all-or-nothing (a Windows list limitation): the row "
                 + "height applies to every column, there is no per-column setting.",
                 applyLive: () => _games.TwoLineRows = _cfg.GetBool("TwoLineRows", true)),
+            Options.OptionItem.Action("Display", "Edit colours…", ShowColorEditor,
+                "Customise the shared LiteBox palette. Takes full effect after restarting LiteBox."),
         });
 
         w.AddSection("Pause screen", new[]
@@ -1456,6 +1458,82 @@ internal sealed class MainWindow : Form, IMessageFilter
         foreach (var d in _achCacheDirs)
             try { var dir = Path.Combine(LiteBoxPaths.Data, d); if (Directory.Exists(dir)) Directory.Delete(dir, true); }
             catch { }
+    }
+
+    // Options → Colors: swatch + hex + system color picker + per-color reset, for the shared theme.
+    // Edits the live LiteBoxTheme immediately (so a newly-opened dialog reflects it); the section's
+    // apply (LiteBoxTheme.Save) persists it. Already-built windows — the main window especially — pick
+    // the new palette up on the next launch, hence the "restart" note.
+    // Colour editor as its OWN modal dialog (opened from Display → "Edit colours…"). A section panel
+    // hosted inside the Options window's nested AutoScroll host failed to create its window handle; a
+    // standalone top-level dialog sidesteps that. One button per colour (the button IS the swatch):
+    // left-click = picker, right-click = reset that colour. OK saves; Cancel restores the snapshot.
+    private void ShowColorEditor()
+    {
+        float sc = LiteBoxTheme.DpiScale(this);
+        int Z(int px) => (int)Math.Round(px * sc);
+        static Color Ink(Color c) => (0.299 * c.R + 0.587 * c.G + 0.114 * c.B) > 140 ? Color.Black : Color.White;
+
+        var swatches = LiteBoxTheme.Swatches;
+        var snapshot = new Color[swatches.Length];
+        for (int i = 0; i < snapshot.Length; i++) snapshot[i] = swatches[i].Get();
+
+        var form = new Form
+        {
+            Text = "LiteBox — Colours", FormBorderStyle = FormBorderStyle.FixedDialog,
+            StartPosition = FormStartPosition.CenterParent, MinimizeBox = false, MaximizeBox = false,
+            ShowInTaskbar = false, ShowIcon = false, BackColor = Bg, ForeColor = Fg, Font = new Font("Segoe UI", 9f),
+            ClientSize = new Size(Z(380), Z(44) + swatches.Length * Z(34) + Z(50)),
+        };
+
+        var list = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill, BackColor = Bg, AutoScroll = true,
+            FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(Z(12), Z(10), Z(12), Z(6)),
+        };
+        var buttons = new Button[swatches.Length];
+        void Style(int i) { var sw = swatches[i]; var b = buttons[i]; b.BackColor = sw.Get(); b.ForeColor = Ink(sw.Get()); b.Text = $"{sw.Name}    {LiteBoxTheme.ToHex(sw.Get())}"; }
+        for (int i = 0; i < swatches.Length; i++)
+        {
+            int ix = i; var sw = swatches[i];
+            var b = new Button
+            {
+                Size = new Size(Z(344), Z(30)), Margin = new Padding(0, Z(2), 0, Z(2)),
+                FlatStyle = FlatStyle.Flat, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(Z(10), 0, 0, 0),
+                Font = new Font("Segoe UI", 9f), FlatAppearance = { BorderColor = Color.FromArgb(80, 80, 84), BorderSize = 1 },
+            };
+            buttons[i] = b; Style(i);
+            b.Click += (_, _) =>
+            {
+                using var dlg = new ColorDialog { Color = sw.Get(), FullOpen = true, AnyColor = true };
+                if (dlg.ShowDialog(form) == DialogResult.OK) { sw.Set(dlg.Color); Style(ix); }
+            };
+            b.MouseUp += (_, me) => { if (me.Button == MouseButtons.Right) { sw.Set(sw.Default); Style(ix); } };
+            list.Controls.Add(b);
+        }
+
+        var footer = new Panel { Dock = DockStyle.Bottom, Height = Z(46), BackColor = Panel };
+        var ok = new Button { Text = "OK", Size = new Size(Z(84), Z(28)), FlatStyle = FlatStyle.Flat, BackColor = LiteBoxTheme.Ok, ForeColor = Color.White, FlatAppearance = { BorderSize = 0 } };
+        var cancel = new Button { Text = "Cancel", Size = new Size(Z(84), Z(28)), FlatStyle = FlatStyle.Flat, BackColor = LiteBoxTheme.CancelBtn, ForeColor = Color.White, FlatAppearance = { BorderSize = 0 } };
+        var resetAll = new Button { Text = "Reset all", Size = new Size(Z(90), Z(28)), FlatStyle = FlatStyle.Flat, BackColor = Panel2, ForeColor = Fg, FlatAppearance = { BorderSize = 0 } };
+        ok.Click += (_, _) => { LiteBoxTheme.Save(_cfg); form.DialogResult = DialogResult.OK; form.Close(); };
+        cancel.Click += (_, _) => { for (int i = 0; i < snapshot.Length; i++) swatches[i].Set(snapshot[i]); form.DialogResult = DialogResult.Cancel; form.Close(); };
+        resetAll.Click += (_, _) => { LiteBoxTheme.ResetAll(); for (int i = 0; i < buttons.Length; i++) Style(i); };
+        footer.Controls.AddRange(new Control[] { resetAll, cancel, ok });
+        void LayoutFooter()
+        {
+            int r = footer.ClientSize.Width - Z(12), y = (footer.Height - ok.Height) / 2;
+            ok.Location = new Point(r - ok.Width, y);
+            cancel.Location = new Point(ok.Left - cancel.Width - Z(8), y);
+            resetAll.Location = new Point(Z(12), y);
+        }
+        footer.Resize += (_, _) => LayoutFooter();
+        LayoutFooter();
+
+        form.Controls.Add(list);
+        form.Controls.Add(footer);
+        form.AcceptButton = ok; form.CancelButton = cancel;
+        try { form.ShowDialog((Form?)Form.ActiveForm ?? this); } finally { form.Dispose(); }
     }
 
     private Control BuildCachesSection()

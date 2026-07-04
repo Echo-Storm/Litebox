@@ -26,18 +26,21 @@ using System.Linq;
 using System.Windows.Forms;
 using Unbroken.LaunchBox.Plugins;
 using Unbroken.LaunchBox.Plugins.Data;
+using LbApiHost.Host.UiKit;
 
 namespace LbApiHost.Host;
 
 internal sealed partial class EditGameWindow : Form   // Game Saves page lives in EditGameWindowSaves.cs
 {
-    // Palette — matches OptionsWindow / EditEmulatorWindow.
-    private static readonly Color Bg = Color.FromArgb(24, 24, 30);
-    private static readonly Color PanelC = Color.FromArgb(34, 34, 42);
-    private static readonly Color Field = Color.FromArgb(45, 45, 54);
-    private static readonly Color Fg = Color.FromArgb(222, 222, 222);
-    private static readonly Color SubFg = Color.FromArgb(150, 150, 165);
-    private static readonly Color Accent = Color.FromArgb(0, 122, 204);
+    // Palette — harmonized onto the shared LiteBoxTheme (was a local, slightly bluer near-duplicate).
+    // One source of truth so the Options → Colors editor drives this window too. ModifiedColor stays
+    // local (it isn't part of the shared theme).
+    private static readonly Color Bg = LiteBoxTheme.Bg;
+    private static readonly Color PanelC = LiteBoxTheme.PanelC;
+    private static readonly Color Field = LiteBoxTheme.Panel2;
+    private static readonly Color Fg = LiteBoxTheme.Fg;
+    private static readonly Color SubFg = LiteBoxTheme.SubFg;
+    private static readonly Color Accent = LiteBoxTheme.Accent;
     private static readonly Color ModifiedColor = Color.FromArgb(235, 150, 135);   // slightly-red tint for a changed field
 
     // Layout constants (two-column grid) - DPI-scaled instance fields, not compile-time consts:
