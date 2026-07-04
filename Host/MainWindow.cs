@@ -162,7 +162,7 @@ internal sealed class MainWindow : Form
     private volatile bool _closing;        // form is closing → the loader bails before its blocking Invoke
     private bool _ascending = true;
     private string[] _sortKeys;          // parallel to SortLabels (column keys; "name" = CompareName)
-    private string _curSortKey = "name"; // current sort key (header click can pick a non-combo column)
+    private string _curSortKey = "title"; // current sort key (header click can pick a non-combo column)
     private bool _suppressSort;
 
     private readonly LiteBoxConfig _cfg;
@@ -181,11 +181,11 @@ internal sealed class MainWindow : Form
     /// <summary>Marker for the synthetic "All Games" tree root.</summary>
     private sealed class AllNode { public static readonly AllNode Instance = new(); }
 
-    // Sort options (default first = CompareName). Each maps to an OLV column so
-    // sorting goes THROUGH ObjectListView (otherwise SetObjects re-sorts and
-    // clobbers a manual sort). "Name" uses a hidden CompareName column.
+    // Sort options (default first = Title). Sorting goes THROUGH ObjectListView (otherwise SetObjects
+    // re-sorts and clobbers a manual sort). "Title" sorts by the article-stripped, SortTitle-aware
+    // CompareName (LaunchBox-style) while DISPLAYING the full title — a per-game Sort Title overrides it.
     private static readonly string[] SortLabels =
-        { "Name", "Title", "Platform", "Developer", "Year", "Rating", "Plays", "Date Added", "Date Modified", "Last Played" };
+        { "Title", "Platform", "Developer", "Year", "Rating", "Plays", "Date Added", "Date Modified", "Last Played" };
 
     public MainWindow(PluginRegistry reg, IDataManager dm)
     {
@@ -580,7 +580,7 @@ internal sealed class MainWindow : Form
 
         lv.RebuildColumns();
 
-        _sortKeys = new[] { "name", "title", "platform", "developer", "year", "rating", "plays", "dateadded", "datemodified", "lastplayed" };
+        _sortKeys = new[] { "title", "platform", "developer", "year", "rating", "plays", "dateadded", "datemodified", "lastplayed" };
 
         lv.SelectionChangedGame += OnGameSelectionChanged;
         lv.GameActivated += LaunchSelected;
@@ -1044,7 +1044,7 @@ internal sealed class MainWindow : Form
         var g = _games.SelectedGame;
         _cfg.Set("LastGame", g != null ? S(Safe(() => g.Id)) : "");
         string sortKey = (_sortKeys != null && _sortCombo.SelectedIndex >= 0 && _sortCombo.SelectedIndex < _sortKeys.Length)
-                         ? _sortKeys[_sortCombo.SelectedIndex] : "name";
+                         ? _sortKeys[_sortCombo.SelectedIndex] : "title";
         _cfg.Set("SortColumn", sortKey);
         _cfg.SetBool("SortAsc", _ascending);
         _cfg.SetBool("MetaExpanded", _metaExpanded);
@@ -1515,7 +1515,7 @@ internal sealed class MainWindow : Form
     {
         _ascending = _cfg.GetBool("SortAsc", true);
         if (_dirBtn != null) _dirBtn.Text = _ascending ? "▲" : "▼";
-        var key = _cfg.Get("SortColumn", "name");
+        var key = _cfg.Get("SortColumn", "title");   // legacy "name" configs fall back to "title" below (same order)
         int idx = 0;
         for (int i = 0; i < _sortKeys.Length; i++)
             if (string.Equals(_sortKeys[i], key, StringComparison.OrdinalIgnoreCase)) { idx = i; break; }
