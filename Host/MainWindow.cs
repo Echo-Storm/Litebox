@@ -2033,6 +2033,7 @@ internal sealed class MainWindow : Form, IMessageFilter
     {
         if (_poster == null) return;
         int n = 0; try { n = _games.VisibleGames.Count; } catch { }
+        int prevN = 0; try { prevN = _poster.VirtualListSize; } catch { }   // to detect a shrink
         try
         {
             // Native mode: drop the virtual item cache. A re-sort/filter changes which game sits at each
@@ -2044,6 +2045,9 @@ internal sealed class MainWindow : Form, IMessageFilter
         }
         catch { }
         LayoutPoster();   // item count changed → vertical scrollbar may toggle → re-layout
+        // Same shrink guard as the list view: a smaller count leaves the native scroll parked past the
+        // new end (blank grid), so snap back to the top when the item count dropped.
+        if (n > 0 && n < prevN) { try { _poster.EnsureVisible(0); } catch { } }
         _poster.Invalidate();
     }
 

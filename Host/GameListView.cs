@@ -368,6 +368,7 @@ internal sealed class GameListView : ListView
     public void RebuildView()
     {
         var prev = SelectedGame;
+        int prevLen = _view.Length;   // to detect a shrink (see the scroll-clamp below)
         IEnumerable<IGame> q = _all;
         if (FilterPredicate != null) q = q.Where(SafeFilter);
         List<IGame> list = SortGetter == null
@@ -380,7 +381,14 @@ internal sealed class GameListView : ListView
         MeasureContentFits();   // view content changed → re-fit columns (capped + cached, so cheap)
         AutoFit();
         try { SelectedIndices.Clear(); } catch { }
-        if (prev != null) { int ix = Array.IndexOf(_view, prev); if (ix >= 0) SetSelectedAndFocused(ix); }
+        int selIx = prev != null ? Array.IndexOf(_view, prev) : -1;
+        if (selIx >= 0) SetSelectedAndFocused(selIx);
+        // A native virtual ListView keeps its pixel scroll offset when VirtualListSize SHRINKS, so
+        // switching to a smaller view (e.g. a platform with fewer games) can leave the viewport parked
+        // past the new end — rendering blank. When the list shrank, snap the scroll back into range: to
+        // the surviving selection, else the top. EnsureVisible is a no-op when the target is already
+        // visible, so a same-size / grown refresh is untouched.
+        if (_view.Length > 0 && _view.Length < prevLen) { try { EnsureVisible(selIx >= 0 ? selIx : 0); } catch { } }
         Invalidate();
         ViewChanged?.Invoke();
     }
