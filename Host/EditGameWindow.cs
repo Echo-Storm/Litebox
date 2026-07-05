@@ -447,8 +447,16 @@ internal sealed partial class EditGameWindow : Form   // Game Saves page lives i
         };
         grid.Columns.Add(valCol);
         grid.DataError += (_, e) => e.ThrowException = false;
+        // Multi-select: grey the "‹multiple values›" placeholder like the Metadata fields do.
+        grid.CellFormatting += (_, e) =>
+        { if (e.ColumnIndex == CfValue && (e.Value as string) == Multi && e.CellStyle != null) e.CellStyle.ForeColor = SubFg; };
 
-        // Value cell → an editable combo seeded with that row-name's library values.
+        // Value cell → an editable combo seeded with that row-name's library values. TWO fixes make
+        // FREE TEXT actually commit (a combo cell silently rejects it otherwise):
+        //   1. typing in the editing ComboBox does NOT mark the cell dirty by itself (only picking an
+        //      item does) → without NotifyCurrentCellDirty the grid commits the OLD value;
+        //   2. the cell validates the committed value against the COLUMN's Items → register the typed
+        //      text in CellValidating so the parse succeeds.
         grid.EditingControlShowing += (_, e) =>
         {
             if (grid.CurrentCell?.ColumnIndex == CfValue && e.Control is ComboBox cb)
@@ -458,9 +466,12 @@ internal sealed partial class EditGameWindow : Form   // Game Saves page lives i
                 cb.Items.Clear();
                 string name = (grid.CurrentRow?.Cells[CfName].Value as string ?? "").Trim();
                 if (_cfValuesByName.TryGetValue(name, out var vals)) cb.Items.AddRange(vals);
+                string curv = grid.CurrentCell.Value as string ?? "";
+                if (curv.Length > 0 && !cb.Items.Contains(curv)) cb.Items.Add(curv);
+                cb.TextChanged -= CfValueComboTextChanged;   // shared editing-control instance → no handler stacking
+                cb.TextChanged += CfValueComboTextChanged;
             }
         };
-        // Accept free text: register any typed value so the combo commit never DataErrors.
         grid.CellValidating += (_, e) =>
         {
             if (e.ColumnIndex != CfValue) return;
@@ -567,6 +578,11 @@ internal sealed partial class EditGameWindow : Form   // Game Saves page lives i
         catch { }
         _cfValuesByName = byName.ToDictionary(kv => kv.Key, kv => kv.Value.ToArray(), StringComparer.OrdinalIgnoreCase);
     }
+
+    // Typed text in the Value combo → mark the cell dirty (see the BuildCustomFieldsPage note:
+    // only a dropdown SELECTION does it natively, so free text would commit the old value).
+    private void CfValueComboTextChanged(object? sender, EventArgs e)
+    { try { _cfGrid?.NotifyCurrentCellDirty(true); } catch { } }
 
     private string MergeCfValue(string name)
     {
