@@ -534,6 +534,344 @@ internal sealed partial class EditGameWindow
         if (_anGrid != null) LoadAlternateNames();
         if (_csGrid != null) LoadControllerSupport();
     }
+
+    // ── Controller Support (MULTI-select): aggregated view ────────────────
+    // Truth = per game: controller → at most ONE support level. The model is a dictionary
+    // (gameId → controllerId → level), so that invariant is STRUCTURALLY impossible to violate.
+    // The grid is an aggregate: one row per DISTINCT (controller, support) pair with "N / total"
+    // games — the same controller with two different supports shows as two rows. Any mutation can
+    // merge/split/empty rows, so every operation ends with a full grid rebuild:
+    //   • editing a row's controller/support moves that pair's games to the new pair (a game's
+    //     other support for the same controller is removed by construction);
+    //   • the always-empty last row adds a pair, applied to ALL selected games;
+    //   • clicking the Games cell applies the pair to all games; "Select Games…" opens a
+    //     checkbox list to choose exactly which games carry the pair;
+    //   • Delete removes the pair from its games.
+    // Nothing is written until OK (SaveControllerSupportMulti — only the games whose map changed).
+
+    private Dictionary<string, Dictionary<string, string>>? _csmModel;    // gameId → controllerId → level ("" = none)
+    private Dictionary<string, Dictionary<string, string>>? _csmLoaded;   // deep snapshot for change detection
+    private DataGridView? _csmGrid;
+    private DataGridViewComboBoxColumn? _csmCtlCol;
+    private bool _csmRebuilding;
+
+    private Control BuildControllerSupportMultiPage()
+    {
+        var p = new Panel { BackColor = Bg, Padding = new Padding(S(6)) };
+        var blurb = new Label
+        {
+            Dock = DockStyle.Top, Height = S(34), BackColor = Bg, ForeColor = SubFg,
+            Padding = new Padding(S(2), S(4), S(2), 0),
+            Text = $"Aggregated over the {_editGames.Count} selected games — one row per controller/support pair. "
+                 + "Click a row's Games cell (or Select Games…) to choose which games carry it.",
+        };
+
+        var grid = NewDarkGrid();
+        _csmCtlCol = new DataGridViewComboBoxColumn
+        {
+            HeaderText = "Controller", FillWeight = 400, FlatStyle = FlatStyle.Flat,
+            DisplayStyle = DataGridViewComboBoxDisplayStyle.Nothing, SortMode = DataGridViewColumnSortMode.NotSortable,
+        };
+        var supCol = new DataGridViewComboBoxColumn
+        {
+            HeaderText = "Support (Optional)", FillWeight = 260, FlatStyle = FlatStyle.Flat,
+            DisplayStyle = DataGridViewComboBoxDisplayStyle.Nothing, SortMode = DataGridViewColumnSortMode.NotSortable,
+        };
+        supCol.Items.AddRange(SupportDisplay.Cast<object>().ToArray());
+        var cntCol = new DataGridViewTextBoxColumn { HeaderText = "Games", FillWeight = 110, ReadOnly = true, SortMode = DataGridViewColumnSortMode.NotSortable };
+        grid.Columns.Add(_csmCtlCol);
+        grid.Columns.Add(supCol);
+        grid.Columns.Add(cntCol);
+        RefreshMultiControllerColumn();
+
+        grid.CellValidating += (_, e) =>
+        {
+            if (e.ColumnIndex > 1) return;
+            var col = e.ColumnIndex == 0 ? _csmCtlCol! : supCol;
+            var v = e.FormattedValue as string ?? "";
+            if (v.Length > 0 && !col.Items.Contains(v)) col.Items.Add(v);
+        };
+
+        // Load the per-game model (+ deep snapshot for the save diff).
+        _csmModel = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var g in _editGames)
+        {
+            string gid = Safe(() => g.Id) ?? "";
+            if (gid.Length == 0) continue;
+            var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                foreach (var row in (g as ILiteBoxGame)?.GetSubEntities("GameControllerSupport")
+                                    ?? (IReadOnlyList<IReadOnlyDictionary<string, string>>)Array.Empty<IReadOnlyDictionary<string, string>>())
+                    if (row.TryGetValue("ControllerId", out var cid) && cid.Length > 0)
+                        map[cid] = NormLevel(row.TryGetValue("SupportLevel", out var l) ? l : "");
+            }
+            catch { }
+            _csmModel[gid] = map;
+        }
+        _csmLoaded = _csmModel.ToDictionary(kv => kv.Key,
+            kv => new Dictionary<string, string>(kv.Value, StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase);
+
+        // Combo edits commit immediately (else CellValueChanged waits for the cell to be left).
+        grid.CurrentCellDirtyStateChanged += (_, _) =>
+        { if (!_csmRebuilding && grid.IsCurrentCellDirty && grid.CurrentCell?.ColumnIndex <= 1) grid.CommitEdit(DataGridViewDataErrorContexts.Commit); };
+        grid.CellValueChanged += (_, e) =>
+        {
+            if (_csmRebuilding || e.RowIndex < 0 || e.ColumnIndex > 1) return;
+            var row = grid.Rows[e.RowIndex];
+            // Rebuilding from inside the edit pipeline is a reentrant no-no — defer to idle.
+            BeginInvoke((Action)(() => OnMultiRowEdited(row)));
+        };
+        grid.CellClick += (_, e) =>
+        {
+            if (_csmRebuilding || e.RowIndex < 0 || e.ColumnIndex != 2) return;
+            var row = grid.Rows[e.RowIndex];
+            if (row.IsNewRow || row.Tag is not Tuple<string, string> pair) return;
+            ShowMultiSelectGamesDialog(pair.Item1, pair.Item2);   // Games cell → pick the games (Check/Uncheck All inside)
+        };
+        grid.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode != Keys.Delete || _readOnly || grid.IsCurrentCellInEditMode) return;
+            e.Handled = true; e.SuppressKeyPress = true;
+            DeleteMultiRow(grid.CurrentRow);
+        };
+
+        var bottom = new Panel { Dock = DockStyle.Bottom, Height = S(40), BackColor = Bg, Padding = new Padding(0, S(6), 0, 0) };
+        var sel = FooterBtn("Select Games…", Color.FromArgb(60, 60, 72));
+        var del = FooterBtn("Delete Controller", Color.FromArgb(60, 60, 72));
+        var manage = FooterBtn("Manage Game Controllers…", Color.FromArgb(60, 60, 72));
+        sel.AutoSize = del.AutoSize = manage.AutoSize = false;
+        sel.Enabled = del.Enabled = !_readOnly;
+        sel.Click += (_, _) =>
+        {
+            var row = grid.CurrentRow;
+            if (row == null || row.IsNewRow || row.Tag is not Tuple<string, string> pair) return;
+            ShowMultiSelectGamesDialog(pair.Item1, pair.Item2);
+        };
+        del.Click += (_, _) => DeleteMultiRow(grid.CurrentRow);
+        manage.Click += (_, _) =>
+        {
+            ShowManageControllersDialog();
+            PurgeMissingControllersFromModel();   // a deleted catalog controller lost its rows library-wide
+            RefreshMultiControllerColumn();
+            RebuildMultiRows();
+        };
+        bottom.Controls.AddRange(new Control[] { sel, del, manage });
+        bottom.Resize += (_, _) =>
+        {
+            sel.SetBounds(0, S(6), S(150), S(28));
+            del.SetBounds(S(156), S(6), S(170), S(28));
+            manage.SetBounds(bottom.ClientSize.Width - S(220), S(6), S(220), S(28));
+        };
+
+        p.Controls.Add(grid);
+        p.Controls.Add(blurb);
+        p.Controls.Add(bottom);
+        grid.BringToFront();
+        _csmGrid = grid;
+        RebuildMultiRows();
+        return p;
+    }
+
+    private static string NormLevel(string l) => int.TryParse(l, out var v) && v is >= 0 and <= 3 ? v.ToString() : "";
+    private static int LevelOrder(string lvl) => lvl.Length == 0 ? 0 : (int.TryParse(lvl, out var v) ? v + 1 : 9);
+
+    private void RefreshMultiControllerColumn()
+    {
+        if (_csmCtlCol == null) return;
+        _csDisplayToId.Clear();
+        var displays = new List<string>();
+        foreach (var r in ControllerCatalogStore.All())
+        {
+            string d = r.Category.Length > 0 ? $"{r.Name} ({r.Category})" : r.Name;
+            if (_csDisplayToId.TryAdd(d, r.Id)) displays.Add(d);
+        }
+        _csmCtlCol.Items.Clear();
+        _csmCtlCol.Items.AddRange(displays.Cast<object>().ToArray());
+    }
+
+    private IEnumerable<string> GamesWithPair(string ctl, string lvl)
+        => _csmModel!.Where(kv => kv.Value.TryGetValue(ctl, out var l) && l == lvl).Select(kv => kv.Key);
+
+    /// <summary>Sets controller→level on the given games. The per-game dictionary keys on the
+    /// controller, so any OTHER support the game had for it is replaced — the invariant.</summary>
+    private void AssignPair(string ctl, string lvl, IEnumerable<string> gids)
+    { foreach (var gid in gids.ToList()) if (_csmModel!.TryGetValue(gid, out var map)) map[ctl] = lvl; }
+
+    private void OnMultiRowEdited(DataGridViewRow row)
+    {
+        if (_csmModel == null || row.DataGridView == null) return;
+        string display = (row.Cells[0].Value as string ?? "").Trim();
+        if (display.Length == 0) return;                                     // new row not filled yet
+        string ctl = _csDisplayToId.TryGetValue(display, out var id) ? id : display;
+        string lvl = SupportToLevel(row.Cells[1].Value as string) ?? "";
+        if (row.Tag is Tuple<string, string> old)
+        {
+            if (old.Item1 == ctl && old.Item2 == lvl) return;
+            // Move this pair's games to the edited pair (same-controller conflicts die structurally).
+            foreach (var gid in GamesWithPair(old.Item1, old.Item2).ToList())
+            {
+                _csmModel[gid].Remove(old.Item1);
+                _csmModel[gid][ctl] = lvl;
+            }
+        }
+        else
+        {
+            // NEW row: apply only to the games that DON'T have this controller yet — adding
+            // "C / (empty)" next to an existing "C / Required" must never swallow the other
+            // pair's games. When every game already has the controller, open Select Games so
+            // the assignment is explicit instead of silently stealing.
+            var lacking = _csmModel.Where(kv => !kv.Value.ContainsKey(ctl)).Select(kv => kv.Key).ToList();
+            if (lacking.Count > 0) { AssignPair(ctl, lvl, lacking); RebuildMultiRows(); }
+            else { RebuildMultiRows(); ShowMultiSelectGamesDialog(ctl, lvl); }
+            return;
+        }
+        RebuildMultiRows();
+    }
+
+    private void DeleteMultiRow(DataGridViewRow? row)
+    {
+        if (_readOnly || row == null || row.IsNewRow || row.Tag is not Tuple<string, string> pair || _csmModel == null) return;
+        foreach (var gid in GamesWithPair(pair.Item1, pair.Item2).ToList()) _csmModel[gid].Remove(pair.Item1);
+        RebuildMultiRows();
+    }
+
+    private void RebuildMultiRows()
+    {
+        if (_csmGrid == null || _csmModel == null) return;
+        _csmRebuilding = true;
+        try
+        {
+            _csmGrid.Rows.Clear();
+            int total = _csmModel.Count;
+            var counts = new Dictionary<(string ctl, string lvl), int>();
+            foreach (var map in _csmModel.Values)
+                foreach (var kv in map)
+                { var k = (kv.Key, kv.Value); counts[k] = counts.TryGetValue(k, out var n) ? n + 1 : 1; }
+            foreach (var kv in counts
+                         .OrderBy(k => ControllerDisplay(k.Key.ctl), StringComparer.OrdinalIgnoreCase)
+                         .ThenBy(k => LevelOrder(k.Key.lvl)))
+            {
+                int i = _csmGrid.Rows.Add(ControllerDisplay(kv.Key.ctl), SupportToDisplay(kv.Key.lvl), $"{kv.Value} / {total}");
+                var r = _csmGrid.Rows[i];
+                r.Tag = Tuple.Create(kv.Key.ctl, kv.Key.lvl);
+                r.Cells[2].ToolTipText = "Click to choose which games carry this controller/support";
+            }
+        }
+        finally { _csmRebuilding = false; }
+    }
+
+    /// <summary>"Select Games…": exactly which of the selected games carry this pair. Checking a game
+    /// assigns the pair (replacing its other support for the controller); unchecking removes it.</summary>
+    private void ShowMultiSelectGamesDialog(string ctl, string lvl)
+    {
+        if (_csmModel == null) return;
+        using var f = NewDialog($"Select Games — {ControllerDisplay(ctl)}"
+                                + (SupportToDisplay(lvl).Length > 0 ? $" / {SupportToDisplay(lvl)}" : ""), 520, 470);
+        var list = new CheckedListBox
+        {
+            Dock = DockStyle.Fill, BackColor = PanelC, ForeColor = Fg, BorderStyle = BorderStyle.FixedSingle,
+            CheckOnClick = true, IntegralHeight = false,
+        };
+        var ordered = _editGames.Where(g => (Safe(() => g.Id) ?? "").Length > 0)
+                                .OrderBy(g => Safe(() => g.Title) ?? "", StringComparer.OrdinalIgnoreCase).ToList();
+        // BeginUpdate: a multi-selection can be huge (whole-platform edits, 20K+ games) — filling
+        // and mass-checking item by item with live repaints would crawl otherwise. The scrollbar
+        // itself is native to CheckedListBox.
+        list.BeginUpdate();
+        foreach (var g in ordered)
+        {
+            string gid = Safe(() => g.Id) ?? "";
+            bool has = _csmModel.TryGetValue(gid, out var map) && map.TryGetValue(ctl, out var l) && l == lvl;
+            list.Items.Add(Safe(() => g.Title) ?? gid, has);
+        }
+        list.EndUpdate();
+
+        var top = new Panel { Dock = DockStyle.Top, Height = S(40), BackColor = Bg };
+        var checkAll = DlgBtn("Check All", Color.FromArgb(60, 60, 72));
+        var uncheckAll = DlgBtn("Uncheck All", Color.FromArgb(60, 60, 72));
+        checkAll.Enabled = uncheckAll.Enabled = !_readOnly;
+        void SetAll(bool on)
+        {
+            list.BeginUpdate();
+            try { for (int i = 0; i < list.Items.Count; i++) list.SetItemChecked(i, on); }
+            finally { list.EndUpdate(); }
+        }
+        checkAll.Click += (_, _) => SetAll(true);
+        uncheckAll.Click += (_, _) => SetAll(false);
+        top.Controls.AddRange(new Control[] { checkAll, uncheckAll });
+        top.Resize += (_, _) =>
+        {
+            checkAll.Location = new Point(S(0), S(6));
+            uncheckAll.Location = new Point(checkAll.Right + S(8), S(6));
+        };
+
+        var bottom = new Panel { Dock = DockStyle.Bottom, Height = S(46), BackColor = Bg };
+        var ok = DlgBtn("✔ OK", Color.FromArgb(50, 110, 65));
+        var cancel = DlgBtn("✘ Cancel", Color.FromArgb(70, 70, 82));
+        ok.Enabled = !_readOnly;
+        cancel.DialogResult = DialogResult.Cancel;
+        bottom.Controls.AddRange(new Control[] { ok, cancel });
+        bottom.Resize += (_, _) =>
+        {
+            cancel.Location = new Point(bottom.ClientSize.Width - cancel.Width - S(12), S(8));
+            ok.Location = new Point(cancel.Left - ok.Width - S(8), S(8));
+        };
+        ok.Click += (_, _) =>
+        {
+            for (int i = 0; i < ordered.Count; i++)
+            {
+                string gid = Safe(() => ordered[i].Id) ?? "";
+                if (!_csmModel.TryGetValue(gid, out var map)) continue;
+                bool want = list.GetItemChecked(i);
+                bool has = map.TryGetValue(ctl, out var l) && l == lvl;
+                if (want) map[ctl] = lvl;                                    // assign (replaces another support)
+                else if (has) map.Remove(ctl);                               // unchecked → drop the pair
+            }
+            f.DialogResult = DialogResult.OK; f.Close();
+        };
+        cancel.Click += (_, _) => { f.DialogResult = DialogResult.Cancel; f.Close(); };
+        f.Controls.Add(list);
+        f.Controls.Add(top);
+        f.Controls.Add(bottom);
+        list.BringToFront();
+        f.AcceptButton = ok; f.CancelButton = cancel;
+        if (f.ShowDialog(this) == DialogResult.OK) RebuildMultiRows();
+    }
+
+    private void PurgeMissingControllersFromModel()
+    {
+        if (_csmModel == null) return;
+        var known = new HashSet<string>(ControllerCatalogStore.All().Select(r => r.Id), StringComparer.OrdinalIgnoreCase);
+        foreach (var (gid, map) in _csmModel)
+            foreach (var ctl in map.Keys.Where(c => !known.Contains(c)).ToList())
+            {
+                map.Remove(ctl);
+                // The catalog delete already removed it library-wide → keep the snapshot in sync too.
+                if (_csmLoaded != null && _csmLoaded.TryGetValue(gid, out var snap)) snap.Remove(ctl);
+            }
+    }
+
+    private void SaveControllerSupportMulti()
+    {
+        if (_readOnly || !IsMulti || _csmModel == null || _csmLoaded == null) return;
+        foreach (var g in _editGames)
+        {
+            string gid = Safe(() => g.Id) ?? "";
+            if (!_csmModel.TryGetValue(gid, out var map)) continue;
+            var was = _csmLoaded.TryGetValue(gid, out var w) ? w : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            bool same = map.Count == was.Count && map.All(kv => was.TryGetValue(kv.Key, out var l) && l == kv.Value);
+            if (same) continue;
+            var rows = map.OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase).Select(kv =>
+            {
+                var row = new Dictionary<string, string>(StringComparer.Ordinal) { ["ControllerId"] = kv.Key, ["GameId"] = gid };
+                if (kv.Value.Length > 0) row["SupportLevel"] = kv.Value;
+                return (IReadOnlyDictionary<string, string>)row;
+            }).ToList();
+            try { (g as ILiteBoxGame)?.SetSubEntities("GameControllerSupport", rows); }
+            catch (Exception ex) { Console.WriteLine("[controllers] multi save failed: " + ex.Message); }
+        }
+    }
 }
 
 // ── The game-controller catalog (Data\GameControllers.xml) ─────────────────────

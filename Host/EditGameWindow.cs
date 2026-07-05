@@ -185,7 +185,7 @@ internal sealed partial class EditGameWindow : Form   // Game Saves page lives i
         var cancel = FooterBtn("Cancel", Color.FromArgb(70, 70, 82));
         ok.Location = new Point(S(12), S(9));
         cancel.Location = new Point(S(112), S(9));
-        ok.Click += (_, _) => { SaveCurrent(); SaveCustomFields(); SaveAlternateNames(); SaveControllerSupport(); DialogResult = DialogResult.OK; Close(); };
+        ok.Click += (_, _) => { SaveCurrent(); SaveCustomFields(); SaveAlternateNames(); SaveControllerSupport(); SaveControllerSupportMulti(); DialogResult = DialogResult.OK; Close(); };
         cancel.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
 
         var hint = new Label
@@ -251,11 +251,14 @@ internal sealed partial class EditGameWindow : Form   // Game Saves page lives i
         metadata.Nodes.Add(N("Notes", "Notes"));
         metadata.Nodes.Add(N("Custom Fields", "CustomFields"));
         if (!IsMulti) metadata.Nodes.Add(N("Sort Title", "SortTitle"));   // single-game only — hidden in multi
-        metadata.Nodes.Add(N("Additional Versions", "AdditionalVersions"));
-        metadata.Nodes.Add(N("Additional Apps", "AdditionalApps"));
-        metadata.Nodes.Add(N("Alternate Names", "AlternateNames"));
-        metadata.Nodes.Add(N("Controller Support", "ControllerSupport"));
-        metadata.Nodes.Add(N("Game Saves", "GameSaves"));
+        if (!IsMulti)   // per-game structural pages — meaningless across a multi-selection
+        {
+            metadata.Nodes.Add(N("Additional Versions", "AdditionalVersions"));
+            metadata.Nodes.Add(N("Additional Apps", "AdditionalApps"));
+            metadata.Nodes.Add(N("Alternate Names", "AlternateNames"));
+        }
+        metadata.Nodes.Add(N("Controller Support", "ControllerSupport"));   // multi has its own aggregated page
+        if (!IsMulti) metadata.Nodes.Add(N("Game Saves", "GameSaves"));     // per-game too (no multi view yet)
 
         var media = N("Media", "Media");
         media.Nodes.AddRange(new[]
@@ -304,7 +307,7 @@ internal sealed partial class EditGameWindow : Form   // Game Saves page lives i
                 "AdditionalVersions" => IsMulti ? Placeholder("Additional Versions") : BuildAdditionalVersionsPage(),
                 "AdditionalApps" => IsMulti ? Placeholder("Additional Apps") : BuildAdditionalAppsPage(),
                 "AlternateNames" => IsMulti ? Placeholder("Alternate Names") : BuildAlternateNamesPage(),
-                "ControllerSupport" => IsMulti ? Placeholder("Controller Support") : BuildControllerSupportPage(),
+                "ControllerSupport" => IsMulti ? BuildControllerSupportMultiPage() : BuildControllerSupportPage(),
                 _ => Placeholder(_tree.SelectedNode?.Text ?? key),
             };
             _pages[key] = page;
