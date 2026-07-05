@@ -248,15 +248,11 @@ internal static class SaveManager
     }
 
     // ── Plugin-call gate ──────────────────────────────────────────────────
-    // The integration plugins call into LaunchBox's OBFUSCATED core, whose method-body decryptor is a
-    // JIT hook (MonoMod CompileMethodHook). That hook is NOT safe under CONCURRENT first-compilations:
-    // two GetSaves scans running at once (fast game navigation; the game page + the Edit Additional
-    // Version dialog) can wedge threads inside GetSaves and leave the decryptor's module initializer
-    // (Unbroken.UserManagement.SeparatedUser) permanently broken — every later core call then throws
-    // TypeInitializationException for the rest of the session (observed in saves-diag.log: three scans
-    // that never completed, then only TypeInitializationException). Serialize EVERY plugin call behind
-    // one gate so obfuscated code is never JIT-compiled from two scan threads at once.
-    private static readonly object _pluginGate = new();
+    // Every call into an integration plugin is serialized behind the PROCESS-WIDE EmuPlugins.CallGate
+    // (see its doc: the obfuscated core's JIT-hook decryptor is not safe under concurrent first
+    // compilations — a background scan racing the UI thread's GetApplicableEmulators can permanently
+    // break it for the session). One gate for the whole process, shared with EmuPlugins.
+    private static object _pluginGate => EmuPlugins.CallGate;
     /// <summary>Same gate, for the few plugin calls made by the UI layer (e.g. GetPotentialSaveSlots).</summary>
     internal static object PluginGate => _pluginGate;
 

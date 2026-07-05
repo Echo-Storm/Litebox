@@ -33,6 +33,16 @@ internal static class EmuPlugins
     private static PluginRegistry? _reg;
     private static readonly Dictionary<string, EmulatorPlugin?> _byEmulatorId = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>ONE global gate for EVERY call into an integration plugin, process-wide. The plugins
+    /// call into LaunchBox's OBFUSCATED core, whose method-body decryptor is a JIT hook (MonoMod
+    /// CompileMethodHook) that is NOT safe under CONCURRENT first-compilations: two threads JIT-ing
+    /// obfuscated code at once (e.g. a background save scan racing the UI thread's first
+    /// GetApplicableEmulators) can leave the decryptor's module initializer permanently broken —
+    /// every later core call then throws TypeInitializationException for the rest of the session
+    /// (observed: SeparatedUser.ValidateDividedAuthorizerDecryptor NRE in saves-diag.log). Monitor is
+    /// re-entrant, so nested gated calls on one thread are fine.</summary>
+    internal static readonly object CallGate = new();
+
     public static void Configure(PluginRegistry reg) { _reg = reg; _byEmulatorId.Clear(); }
 
     public static IReadOnlyList<EmulatorPlugin> All => _reg?.EmulatorPlugins ?? (IReadOnlyList<EmulatorPlugin>)Array.Empty<EmulatorPlugin>();
@@ -51,7 +61,8 @@ internal static class EmuPlugins
         {
             try
             {
-                var applicable = p.GetApplicableEmulators(new[] { emu });
+                IEnumerable<IEmulator>? applicable;
+                lock (CallGate) applicable = p.GetApplicableEmulators(new[] { emu });
                 if (applicable != null && applicable.Contains(emu)) { match = p; break; }
             }
             catch { }
@@ -74,7 +85,8 @@ internal static class EmuPlugins
         try
         {
             var args = new PrepareForLaunchArgs(emu, game, commandLine, app, ResolveRaCredentials(emu));
-            var resp = p.PrepareEmulatorForLaunch(args);
+            PrepareForLaunchResponse? resp;
+            lock (CallGate) resp = p.PrepareEmulatorForLaunch(args);
             if (resp is { WasSuccess: true } && !string.IsNullOrEmpty(resp.NewCommandLine)
                 && !string.Equals(resp.NewCommandLine, commandLine, StringComparison.Ordinal))
             {
@@ -115,7 +127,8 @@ internal static class EmuPlugins
         if (p == null) return commandLine;
         try
         {
-            var n = p.NormalizeCommandLineForExecutable(commandLine, applicationPath);
+            string? n;
+            lock (CallGate) n = p.NormalizeCommandLineForExecutable(commandLine, applicationPath);
             if (!string.IsNullOrEmpty(n) && !string.Equals(n, commandLine, StringComparison.Ordinal))
             {
                 Console.WriteLine($"[emuplugin] {p.GetType().Name}.NormalizeCommandLine: \"{commandLine}\" → \"{n}\"");
@@ -132,7 +145,7 @@ internal static class EmuPlugins
     {
         var p = ForEmulator(emu);
         if (p == null) return null;
-        try { return p.GetCurrentVersion(ResolveAppPath(emu)); } catch { return null; }
+        try { lock (CallGate) return p.GetCurrentVersion(ResolveAppPath(emu)); } catch { return null; }
     }
 
     public static IEnumerable<EmulatorBiosFile> BiosFiles(IEmulator emu, string platform)
@@ -153,7 +166,7 @@ internal static class EmuPlugins
             }
             catch { }
             if (string.IsNullOrWhiteSpace(cmd)) { try { cmd = emu.CommandLine; } catch { } }
-            return p.GetBiosFilesForPlatform(ResolveAppPath(emu), platform, cmd) ?? Array.Empty<EmulatorBiosFile>();
+            lock (CallGate) return p.GetBiosFilesForPlatform(ResolveAppPath(emu), platform, cmd) ?? Array.Empty<EmulatorBiosFile>();
         }
         catch { return Array.Empty<EmulatorBiosFile>(); }
     }
@@ -164,7 +177,7 @@ internal static class EmuPlugins
     {
         if (ForEmulator(emu) is IEmulatorWithCores wc)
         {
-            try { return wc.GetAllAvailableCores(ResolveAppPath(emu)) ?? Array.Empty<string>(); }
+            try { lock (CallGate) return wc.GetAllAvailableCores(ResolveAppPath(emu)) ?? Array.Empty<string>(); }
             catch { }
         }
         return Array.Empty<string>();
@@ -174,7 +187,7 @@ internal static class EmuPlugins
     {
         if (ForEmulator(emu) is IEmulatorWithCores wc)
         {
-            try { return wc.GetSuggestedCores(ResolveAppPath(emu), platform) ?? Array.Empty<string>(); }
+            try { lock (CallGate) return wc.GetSuggestedCores(ResolveAppPath(emu), platform) ?? Array.Empty<string>(); }
             catch { }
         }
         return Array.Empty<string>();

@@ -29,6 +29,10 @@ internal static class HostBoot
     /// Options → Plugins section lists the same folders the host loads from.</summary>
     public static string PluginsRoot { get; private set; }
 
+    /// <summary>--edit-gamesaves "&lt;title&gt;": auto-open Edit Game → Game Saves for that game once the
+    /// main window is shown (diagnostics — lets a remote session exercise the page hands-free).</summary>
+    public static string AutoEditGameSaves;
+
     /// <summary>Immediate subfolder names of <paramref name="root"/> (plugin folders),
     /// sorted case-insensitively. Empty when the root is missing/unreadable.</summary>
     public static List<string> ListPluginFolders(string root)
@@ -143,8 +147,33 @@ internal static class HostBoot
         }
         catch (Exception ex) { Console.WriteLine("[wpf] pin failed: " + ex.Message); }
 
+        // Initialize the OBFUSCATED CORE assemblies' method-body decryptors BEFORE any plugin loads.
+        // Each protected assembly has a <Module> initializer that installs a JIT hook after inspecting
+        // the runtime; when a plugin's own detours are already installed (ExtendDB ships Harmony/MonoMod
+        // patches), that inspection NREs (SeparatedUser.ValidateDividedAuthorizerDecryptor) and EVERY
+        // later call into that assembly — including the emulator-integration plugins' GetSaves — throws
+        // TypeInitializationException for the whole session (symptom: every save card shows the red
+        // "file no longer exists" dot). LaunchBox never hits this because ITS protectors always
+        // initialize first (LaunchBox.exe itself is protected); replicate that order by running each
+        // core module constructor NOW, before plugins get a chance to hook anything.
+        foreach (var an in new[] { "Unbroken", "Unbroken.LaunchBox", "Unbroken.LaunchBox.Windows",
+                                   "Unbroken.LaunchBox.LocalDb", "Unbroken.LaunchBox.MediaEngine.WindowsClient" })
+        {
+            try
+            {
+                var asm = System.Reflection.Assembly.Load(an);
+                System.Runtime.CompilerServices.RuntimeHelpers.RunModuleConstructor(asm.ManifestModule.ModuleHandle);
+                Console.WriteLine($"[core] pre-initialized {an}");
+            }
+            catch (Exception ex) { Console.WriteLine($"[core] pre-init {an} failed: {ex.Message}"); }
+        }
+
         var reg = PluginLoader.LoadFrom(pluginDirs);
         Console.WriteLine($"Loaded {reg.All.Count} plugin object(s): events={reg.SystemEvents.Count} sysmenu={reg.SystemMenus.Count} gamemenu={reg.GameMenus.Count} themeel={reg.ThemeElements.Count}");
+
+        // Diagnostics: --edit-gamesaves "<title>" auto-opens Edit Game → Game Saves for that game right
+        // after the window shows (remote/headless-driven UI checks without touching the mouse).
+        AutoEditGameSaves = GetArg(args, "--edit-gamesaves");
 
         // Launch lifecycle: drop/reload the optional tier + notify launching plugins.
         HostLaunch.DryRun = args.Contains("--drylaunch");
@@ -153,6 +182,13 @@ internal static class HostBoot
         Gameplay.GameScreens.Configure(lbRoot);    // startup ("NOW LOADING…") + end ("GAME OVER") screens
         Gameplay.ScreenCapture.Configure(lbRoot);  // screenshot hotkey
         EmuPlugins.Configure(reg);   // emulator-integration plugins (RetroArch/Dolphin/… DLLs)
+        // Warm up the integration plugins ONCE, on THIS thread: the first call into a plugin
+        // JIT-compiles obfuscated core code, which initializes the core's method-body decryptor.
+        // Doing it here — serially, before any UI or scan thread exists — makes that fragile init
+        // deterministic instead of racing (see EmuPlugins.CallGate). Also pre-fills the
+        // plugin-per-emulator cache the UI reads on every selection.
+        try { foreach (var e in dm.GetAllEmulators() ?? Array.Empty<IEmulator>()) EmuPlugins.ForEmulator(e); }
+        catch (Exception ex) { Console.WriteLine("[emuplugin] warmup failed: " + ex.Message); }
         DependencyCheck.Configure(LiteBoxConfig.LoadForExe(), lbRoot);   // pre-launch bios/dependency check
 
         EventBus.FirePluginInitialized(reg);
