@@ -392,7 +392,7 @@ internal static class HostLaunch
     {
         if (string.IsNullOrEmpty(targetPath)) return;
 
-        string fileName, args;
+        string fileName, args, workDir = null;
         if (useEmu && emulator != null && !string.IsNullOrEmpty(emulator.ApplicationPath))
         {
             var ep = ResolveEmulatorPlatform(emulator, game);
@@ -427,6 +427,11 @@ internal static class HostLaunch
         {
             fileName = ResolvePath(targetPath);   // direct launch (PC, TeknoParrot, scripts)
             args = cmd?.Trim() ?? "";
+            // LB semantics: a direct exe launch runs in the game's Root Folder when one is set AND
+            // the directory exists (LB fills it in by default at import) — else in the exe's own
+            // folder (Spawn's default). Emulator launches keep the emulator's folder; DOSBox uses
+            // the Root Folder as its C: mount instead (separate, deferred runtime wiring).
+            workDir = RootFolderDir(game);
         }
         // Honour the emulator's "Attempt to hide console" flag (LB's HideConsole). A
         // console-subsystem emulator like MAME otherwise pops a console window that grabs
@@ -437,7 +442,22 @@ internal static class HostLaunch
         // window comes up focused on top of it (the overlay stays visible until its timer
         // closes it). Main emulator launch only — not autorun helpers.
         if (label == "main") Gameplay.GameScreens.ReleaseStartupTopFront();
-        Spawn(fileName, args, label, onSpawned, hideConsole);
+        Spawn(fileName, args, label, onSpawned, hideConsole, workDir);
+    }
+
+    /// <summary>The game's Root Folder resolved to an absolute path (relative values are
+    /// LB-root-based, like every LB path), when set AND the directory exists — the working
+    /// directory for a direct exe launch. Null otherwise (caller falls back to the exe's folder).</summary>
+    private static string RootFolderDir(IGame game)
+    {
+        try
+        {
+            var rf = SafeStr(() => game?.RootFolder);
+            if (string.IsNullOrWhiteSpace(rf)) return null;
+            var abs = ResolvePath(rf.Trim());
+            return Directory.Exists(abs) ? abs : null;
+        }
+        catch { return null; }
     }
 
     /// <summary>The EmulatorPlatform matching the game's platform, else the emulator's default platform.</summary>
@@ -838,12 +858,12 @@ internal static class HostLaunch
     }
 
     /// <summary>Spawns a process (or logs it in DryRun) and waits for exit.</summary>
-    private static void Spawn(string fileName, string args, string label, Action<Process> onSpawned = null, bool hideConsole = false)
+    private static void Spawn(string fileName, string args, string label, Action<Process> onSpawned = null, bool hideConsole = false, string workDir = null)
     {
         if (string.IsNullOrEmpty(fileName)) return;
         if (DryRun) { Console.WriteLine($"[launch/dry] {label}: \"{fileName}\" {args}"); return; }
 
-        Console.WriteLine($"[launch] {label}: \"{fileName}\" {args}");
+        Console.WriteLine($"[launch] {label}: \"{fileName}\" {args}" + (workDir != null ? $" (cwd={workDir})" : ""));
         try
         {
             var psi = new ProcessStartInfo
@@ -852,7 +872,7 @@ internal static class HostLaunch
                 Arguments = args,
                 UseShellExecute = false,
                 CreateNoWindow = hideConsole,   // LB's "Attempt to hide console" — suppress the child console window
-                WorkingDirectory = SafeDir(fileName) ?? _lbRoot ?? AppContext.BaseDirectory,
+                WorkingDirectory = workDir ?? SafeDir(fileName) ?? _lbRoot ?? AppContext.BaseDirectory,
             };
             using var proc = Process.Start(psi);
             if (proc != null && onSpawned != null) { try { onSpawned(proc); } catch { } }
