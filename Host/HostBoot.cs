@@ -37,6 +37,7 @@ internal static class HostBoot
     //   --edit-gamesaves "<title|id>" sugar for --edit-game X --edit-page GameSaves
     //   --options ["<section>"]       open the Options window, optionally on the named section
     //                                 (fuzzy: "gameplay" → "LB · Gameplay")
+    public static string AutoPlay;      // --play "<title|id>" → launch on boot (pair with --drylaunch to audit)
     public static string AutoEditGame;
     public static string AutoEditPage;
     public static string AutoOptions;   // null = not requested; "" = open on the first section
@@ -180,6 +181,10 @@ internal static class HostBoot
         Console.WriteLine($"Loaded {reg.All.Count} plugin object(s): events={reg.SystemEvents.Count} sysmenu={reg.SystemMenus.Count} gamemenu={reg.GameMenus.Count} themeel={reg.ThemeElements.Count}");
 
         // Hands-free UI drivers (see the fields' doc): --edit-game/--edit-page/--edit-gamesaves/--options.
+        // --play "<title|id>" launches the game right after the window shows — combined with
+        // --drylaunch it prints the exact spawn command line without starting anything (the
+        // hands-free way to audit a launch: DOSBox args, emulator command, working dir).
+        AutoPlay = GetArg(args, "--play");
         AutoEditGame = GetArg(args, "--edit-game");
         AutoEditPage = GetArg(args, "--edit-page");
         string legacySaves = GetArg(args, "--edit-gamesaves");

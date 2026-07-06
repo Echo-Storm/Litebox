@@ -546,6 +546,20 @@ internal sealed class MainWindow : Form, IMessageFilter
                     catch (Exception ex) { Console.WriteLine("[options] " + ex.Message); }
                 }));
             }
+            else if (!string.IsNullOrEmpty(HostBoot.AutoPlay))
+            {
+                try
+                {
+                    var g = FindGameForCli(HostBoot.AutoPlay);
+                    if (g != null)
+                    {
+                        Console.WriteLine($"[play] launching \"{Safe(() => g.Title)}\"{(HostLaunch.DryRun ? " (dry)" : "")}");
+                        BeginInvoke((Action)(() => Safe(() => PluginHelper.LaunchBoxMainViewModel.PlayGame(g, null, null, null))));
+                    }
+                    else Console.WriteLine($"[play] game not found: \"{HostBoot.AutoPlay}\"");
+                }
+                catch (Exception ex) { Console.WriteLine("[play] " + ex.Message); }
+            }
             // Automatic Progress Tracking sweep (LB parity) — background, opt-in (LiteBox option) and
             // gated internally on the Settings.xml master switch; local data only (play time, last
             // played, RA cache). Off by default: the on-select / on-exit triggers cover normal use.
