@@ -153,6 +153,11 @@ internal static class LbGlobalOptions
         void BindChk(CheckBox cb, string field) => applies.Add(() => { if (cb.Checked != s.GetBool(field)) s.SetBool(field, cb.Checked); });
         void BindTxt(TextBox tb, string field) => applies.Add(() => { if (tb.Text != s.Get(field)) s.Set(field, tb.Text); });
         void BindIniHk(HotkeyCaptureBox hb, string key) => applies.Add(() => { if (hb.HotkeyValue != ini.Get(key)) { ini.Set(key, hb.HotkeyValue); iniDirty = true; } });
+        // Hotkey box seeded from the EFFECTIVE value (which may be inherited from LaunchBox when the
+        // ini key is absent). Persist ONLY when the user actually changed it — otherwise opening +
+        // OK would freeze the inherited value into the ini and stop it following LaunchBox.
+        void BindIniHkFrom(HotkeyCaptureBox hb, string key, string initial)
+            => applies.Add(() => { if (hb.HotkeyValue != initial) { ini.Set(key, hb.HotkeyValue); iniDirty = true; } });
         void BindIniChk(CheckBox cb, string key, bool def = false) => applies.Add(() => { if (cb.Checked != ini.GetBool(key, def)) { ini.SetBool(key, cb.Checked); iniDirty = true; } });
         // The 13.28-format keys route through LbSettingsStore transparently (ProblemKeys →
         // LB XML on 13.28+, LiteBox DB on 13.27), so plain s.Get/s.Set is all this page needs.
@@ -197,12 +202,13 @@ internal static class LbGlobalOptions
             var use = Chk("Use Game Pause Screen", s.GetBool("UsePauseScreen", true), new Point(S(4), S(8)));
             p.Controls.Add(use);
             p.Controls.Add(Lbl("Pause Key", new Point(S(4), S(40))));
-            var pk = Hk(ini.Get("PauseHotkey", "Pause"), new Point(S(120), S(37)), 220); p.Controls.Add(pk);
+            var pkInit = Gameplay.GameplaySettings.PauseKey();   // effective (LiteBox ini, else inherited from LaunchBox)
+            var pk = Hk(pkInit, new Point(S(120), S(37)), 220); p.Controls.Add(pk);
             p.Controls.Add(Lbl("click, then press a key/combo", new Point(S(348), S(40)), Dim));
             var fade = Chk("Enable Fading", s.GetBool("PauseScreenFading", true), new Point(S(4), S(76)));
             var mute = Chk("Mute Audio During Transitions", s.GetBool("PauseScreenMuting", true), new Point(S(4), S(102)));
             p.Controls.AddRange(new Control[] { fade, mute });
-            BindChk(use, "UsePauseScreen"); BindIniHk(pk, "PauseHotkey");
+            BindChk(use, "UsePauseScreen"); BindIniHkFrom(pk, "PauseHotkey", pkInit);
             BindChk(fade, "PauseScreenFading"); BindChk(mute, "PauseScreenMuting");
         }
 
@@ -210,10 +216,11 @@ internal static class LbGlobalOptions
         {
             var p = Page("Screen Capture");
             p.Controls.Add(Lbl("Screen Capture Key", new Point(S(4), S(12))));
-            var sc = Hk(ini.Get("ScreenCaptureKey", ""), new Point(S(150), S(9)), 220); p.Controls.Add(sc);
+            var scInit = Gameplay.GameplaySettings.ScreenCaptureKey();   // effective (else inherited from LaunchBox)
+            var sc = Hk(scInit, new Point(S(150), S(9)), 220); p.Controls.Add(sc);
             p.Controls.Add(Lbl("click, then press a key/combo  (empty = disabled)", new Point(S(378), S(12)), Dim));
             p.Controls.Add(Lbl("Saves a PNG of the game's monitor to <LB>\\Screenshots.", new Point(S(4), S(44)), Dim));
-            BindIniHk(sc, "ScreenCaptureKey");
+            BindIniHkFrom(sc, "ScreenCaptureKey", scInit);
         }
 
         // Footer note: gameplay changes take effect on the next game launch.

@@ -78,10 +78,18 @@ internal static class GameplaySettings
         return r;
     }
 
-    /// <summary>Pause hotkey string (LiteBox.ini, combo-capable). Default "Pause".</summary>
+    /// <summary>Pause hotkey string (LiteBox.ini, combo-capable). When the user never set one in
+    /// LiteBox (key absent), INHERIT LaunchBox's own KeyboardGamePause (a WPF Key int) converted to
+    /// our format — so someone coming from LaunchBox keeps their configured key. An explicit empty
+    /// value in the ini (user cleared it) stays empty = disabled. Falls back to "Pause".</summary>
     public static string PauseKey()
     {
-        try { return LiteBoxConfig.LoadForExe().Get("PauseHotkey", "Pause") ?? "Pause"; }
+        try
+        {
+            var v = LiteBoxConfig.LoadForExe().Get("PauseHotkey");   // null = never set in LiteBox
+            if (v != null) return v;
+            return LbKeyToCombo(GIntXml("KeyboardGamePause", 7)) ?? "Pause";
+        }
         catch { return "Pause"; }
     }
 
@@ -122,11 +130,38 @@ internal static class GameplaySettings
         catch { return true; }
     }
 
-    /// <summary>Screenshot hotkey string (LiteBox.ini). Empty/None ⇒ disabled.</summary>
+    /// <summary>Screenshot hotkey string (LiteBox.ini). Empty/None ⇒ disabled. When never set in
+    /// LiteBox, INHERIT LaunchBox's KeyboardScreenshot (WPF Key int) — 0/None ⇒ disabled.</summary>
     public static string ScreenCaptureKey()
     {
-        try { return LiteBoxConfig.LoadForExe().Get("ScreenCaptureKey", "") ?? ""; }
+        try
+        {
+            var v = LiteBoxConfig.LoadForExe().Get("ScreenCaptureKey");   // null = never set in LiteBox
+            if (v != null) return v;
+            return LbKeyToCombo(GIntXml("KeyboardScreenshot", 0)) ?? "";
+        }
         catch { return ""; }
+    }
+
+    /// <summary>An int Settings.xml value (LB-native keys, never DB-routed).</summary>
+    private static int GIntXml(string key, int def)
+    {
+        try { var d = ReadSettings(); return d.TryGetValue(key, out var v) && int.TryParse(v, out var n) ? n : def; }
+        catch { return def; }
+    }
+
+    /// <summary>LaunchBox stores its single game-pause / screenshot key as a WPF
+    /// System.Windows.Input.Key int (no modifiers). Convert to our bare-key-name combo format
+    /// (the parser is case-insensitive and shares the key names). 0/None ⇒ null (unset).</summary>
+    private static string? LbKeyToCombo(int wpfKey)
+    {
+        if (wpfKey <= 0) return null;
+        try
+        {
+            var name = Enum.GetName(typeof(System.Windows.Input.Key), wpfKey);
+            return string.IsNullOrEmpty(name) || name.Equals("None", StringComparison.OrdinalIgnoreCase) ? null : name;
+        }
+        catch { return null; }
     }
 
     // ── Settings.xml read (fresh) ────────────────────────────────────────────
