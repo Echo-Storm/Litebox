@@ -67,6 +67,11 @@
     <Lb10Root Condition="'$(Lb10Root)' == ''">$(MSBuildThisFileDirectory)..\..\..\LB</Lb10Root>
     <SdkRefDll Condition="'$(TargetFramework)' == 'net9.0-windows'">$(Lb9Root)\Core\Unbroken.LaunchBox.Plugins.dll</SdkRefDll>
     <SdkRefDll Condition="'$(SdkRefDll)' == ''">$(Lb10Root)\Core\Unbroken.LaunchBox.Plugins.dll</SdkRefDll>
+    <!-- WinRT projections (Windows.Graphics.Capture — SmartCapture FPS detection). LaunchBox
+         already ships Microsoft.Windows.SDK.NET + WinRT.Runtime in Core, so we compile against
+         its copy and resolve at runtime — Private=false, nothing new deployed (same pattern). -->
+    <WinRtRefDir Condition="'$(TargetFramework)' == 'net9.0-windows'">$(Lb9Root)\Core</WinRtRefDir>
+    <WinRtRefDir Condition="'$(WinRtRefDir)' == ''">$(Lb10Root)\Core</WinRtRefDir>
   </PropertyGroup>
 
   <ItemGroup>
@@ -103,6 +108,15 @@
     </Reference>
     <Reference Include="SQLitePCLRaw.batteries_v2">
       <HintPath>..\..\..\LB\Core\SQLitePCLRaw.batteries_v2.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- WinRT projection + runtime (Windows.Graphics.Capture etc.), resolved from LB\Core. -->
+    <Reference Include="Microsoft.Windows.SDK.NET">
+      <HintPath>$(WinRtRefDir)\Microsoft.Windows.SDK.NET.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="WinRT.Runtime">
+      <HintPath>$(WinRtRefDir)\WinRT.Runtime.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>

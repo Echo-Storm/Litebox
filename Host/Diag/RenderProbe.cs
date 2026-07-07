@@ -66,6 +66,8 @@ internal static class RenderProbe
         var sw = Stopwatch.StartNew();
         Console.WriteLine($"[renderprobe] START rootPid={rootPid}");
         var seenWindows = new HashSet<IntPtr>();
+        var meters = new Dictionary<IntPtr, WgcFps>();   // per-window WGC FPS meters
+        long lastFpsAt = 0;
         IntPtr lastFg = IntPtr.Zero;
         long nextGpu = 0;
         HashSet<uint> tree = new() { (uint)rootPid };
@@ -97,6 +99,13 @@ internal static class RenderProbe
                             Console.WriteLine($"[renderprobe] {now,6}ms WIN {(first ? "new" : "fg ")} pid={pid} hwnd=0x{h.ToInt64():X} " +
                                               $"{r.R - r.L}x{r.B - r.T} fg={isFg} class='{cls}' title='{tit}'");
                         }
+                        // Attach a WGC FPS meter to each window (capped) — the real "is it rendering" signal.
+                        if (first && meters.Count < 4)
+                        {
+                            var m = WgcFps.TryCreate(h);
+                            if (m != null) { meters[h] = m; Console.WriteLine($"[renderprobe] {now,6}ms WGC attached hwnd=0x{h.ToInt64():X}"); }
+                            else Console.WriteLine($"[renderprobe] {now,6}ms WGC attach FAILED hwnd=0x{h.ToInt64():X}");
+                        }
                     }
                     catch { }
                     return true;
@@ -104,10 +113,22 @@ internal static class RenderProbe
                 lastFg = fg;
 
                 if (now >= nextGpu) { LogGpu3D(tree, now); nextGpu = now + GpuEveryMs; }
+
+                // Per-window measured FPS (WGC) — the robust rendering signal.
+                if (now - lastFpsAt >= GpuEveryMs && meters.Count > 0)
+                {
+                    double secs = (now - lastFpsAt) / 1000.0; lastFpsAt = now;
+                    foreach (var kv in meters)
+                    {
+                        double fps = secs > 0 ? kv.Value.TakeFrames() / secs : 0;
+                        Console.WriteLine($"[renderprobe] {now,6}ms FPS hwnd=0x{kv.Key.ToInt64():X} = {fps:F1}");
+                    }
+                }
             }
             catch { }
             Thread.Sleep(PollMs);
         }
+        foreach (var m in meters.Values) { try { m.Dispose(); } catch { } }
         Console.WriteLine($"[renderprobe] END ({sw.ElapsedMilliseconds}ms)");
     }
 
