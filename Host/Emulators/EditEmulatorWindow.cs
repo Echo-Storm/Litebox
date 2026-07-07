@@ -53,6 +53,9 @@ internal static class EditEmulatorWindow
         var (pause, applyPause) = BuildPause(emu, s);
         w.AddSection("Pause Screen", pause, applyPause);
 
+        var (lbx, applyLbx) = BuildLiteBox(emu, s);
+        w.AddSection("LiteBox", lbx, applyLbx);
+
         AddScript(w, emu, "Pause Script", e => e.PauseAutoHotkeyScript, (e, v) => e.PauseAutoHotkeyScript = v);
         AddScript(w, emu, "Resume Script", e => e.ResumeAutoHotkeyScript, (e, v) => e.ResumeAutoHotkeyScript = v);
         AddScript(w, emu, "Reset Game Script", e => e.ResetAutoHotkeyScript, (e, v) => e.ResetAutoHotkeyScript = v);
@@ -500,7 +503,7 @@ internal static class EditEmulatorWindow
         };
         var note = new Label
         {
-            Text = "These settings round-trip to Emulators.xml and are honoured by LaunchBox.\nLiteBox does not implement startup/shutdown screens yet.",
+            Text = "These settings round-trip to Emulators.xml and are honoured by both LaunchBox and LiteBox\n(resolved global → emulator → game). See the LiteBox section for LiteBox-only options.",
             Location = new Point(S(8), S(122)), AutoSize = true, ForeColor = SubFg, BackColor = Bg, Font = new Font("Segoe UI", 8.25f),
         };
         p.Controls.Add(dlyLbl); p.Controls.Add(dly); p.Controls.Add(note);
@@ -513,6 +516,67 @@ internal static class EditEmulatorWindow
             Set(() => emu.AggressiveWindowHiding = aggressive.Checked);
             Set(() => emu.HideAllNonExclusiveFullscreenWindows = hideAll.Checked);
             Set(() => emu.StartupLoadDelay = (int)dly.Value);
+        });
+    }
+
+    // ── LiteBox-own per-emulator options (litebox-options.db, NOT Emulators.xml) ──────────
+    // Options LaunchBox has no field for. Each is tri-state: "Use global (<value>)" (default,
+    // no row) / an explicit override. Stored under scope=emulator, so LB never sees them and a
+    // real LaunchBox boot is unaffected.
+    private static (Control, Action) BuildLiteBox(IEmulator emu, float s)
+    {
+        int S(int px) => (int)Math.Round(px * s);
+        var p = new Panel { BackColor = Bg, AutoScroll = true };
+        string emuId = Safe(() => emu.Id) ?? "";
+
+        ComboBox Cbo(int y, int w) => new()
+        {
+            Location = new Point(S(260), S(y)), Width = S(w), DropDownStyle = ComboBoxStyle.DropDownList,
+            BackColor = Panel2, ForeColor = Fg, FlatStyle = FlatStyle.Flat,
+        };
+        Label Lab(string t, int y) => new() { Text = t, Location = new Point(S(8), S(y + 3)), AutoSize = true, ForeColor = Fg, BackColor = Bg };
+
+        // 1. Keep startup/end screens on top (bool tri-state).
+        p.Controls.Add(Lab("Keep startup/end screens on top:", 8));
+        var stayGlobal = Gameplay.GameplaySettings.StartupStayOnTop();
+        var stayCbo = Cbo(6, 220);
+        stayCbo.Items.AddRange(new object[] { $"Use global ({(stayGlobal ? "On" : "Off")})", "On", "Off" });
+        var stayOv = Data.LiteBoxOption.GetOverride(Data.LiteBoxOption.ScopeEmulator, emuId, "StartupStayOnTop");
+        stayCbo.SelectedIndex = string.IsNullOrEmpty(stayOv) ? 0
+            : (string.Equals(stayOv, "true", StringComparison.OrdinalIgnoreCase) ? 1 : 2);
+        p.Controls.Add(stayCbo);
+
+        // 2. Screenshot hotkey (string tri-state: use global / disabled / custom).
+        p.Controls.Add(Lab("Screenshot hotkey:", 44));
+        var capGlobal = Gameplay.GameplaySettings.ScreenCaptureKey();
+        var capOv = Data.LiteBoxOption.GetOverride(Data.LiteBoxOption.ScopeEmulator, emuId, "ScreenCaptureKey");
+        bool capCustom = !string.IsNullOrEmpty(capOv) && capOv != Data.LiteBoxOption.Disabled;
+        var capCbo = Cbo(42, 220);
+        capCbo.Items.AddRange(new object[] { $"Use global ({(string.IsNullOrEmpty(capGlobal) ? "Off" : capGlobal)})", "Disabled", "Custom…" });
+        capCbo.SelectedIndex = string.IsNullOrEmpty(capOv) ? 0 : (capOv == Data.LiteBoxOption.Disabled ? 1 : 2);
+        var capBox = new HotkeyCaptureBox(capCustom ? capOv : "") { Location = new Point(S(490), S(42)), Width = S(150), BackColor = Panel2, ForeColor = Fg, BorderStyle = BorderStyle.FixedSingle, Visible = capCustom };
+        p.Controls.Add(capBox);
+        capCbo.SelectedIndexChanged += (_, _) => capBox.Visible = capCbo.SelectedIndex == 2;
+
+        p.Controls.Add(new Label
+        {
+            Text = "These are LiteBox-only options (LaunchBox has no equivalent). They are stored\nseparately and do not affect a real LaunchBox running on the same library.",
+            Location = new Point(S(8), S(84)), AutoSize = true, ForeColor = SubFg, BackColor = Bg, Font = new Font("Segoe UI", 8.25f),
+        });
+
+        return (p, () =>
+        {
+            // stay-on-top: index 0 = inherit (clear row), 1 = On, 2 = Off.
+            Data.LiteBoxOption.SetOverride(Data.LiteBoxOption.ScopeEmulator, emuId, "StartupStayOnTop",
+                stayCbo.SelectedIndex switch { 1 => "true", 2 => "false", _ => null });
+            // screenshot key: 0 = inherit (clear), 1 = disabled (sentinel), 2 = custom text (or clear if empty).
+            string? capVal = capCbo.SelectedIndex switch
+            {
+                1 => Data.LiteBoxOption.Disabled,
+                2 => string.IsNullOrWhiteSpace(capBox.HotkeyValue) ? null : capBox.HotkeyValue,
+                _ => null,
+            };
+            Data.LiteBoxOption.SetOverride(Data.LiteBoxOption.ScopeEmulator, emuId, "ScreenCaptureKey", capVal);
         });
     }
 

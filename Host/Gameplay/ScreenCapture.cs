@@ -29,7 +29,11 @@ internal static class ScreenCapture
 
     public static void Arm()
     {
-        var key = GameplaySettings.ScreenCaptureKey();
+        // Per-launch resolved key (emulator override → global, "" = explicitly off), snapshotted
+        // at launch. Only fall back to the raw global when there's NO snapshot — an empty value
+        // in the snapshot is a real "disabled for this launch", not a miss.
+        var snap = LaunchedGame.Current;
+        var key = snap != null ? snap.ScreenCaptureKey : GameplaySettings.ScreenCaptureKey();
         if (string.IsNullOrWhiteSpace(key) || key.Equals("None", StringComparison.OrdinalIgnoreCase)) return;
         var (mod, vk, label) = ParseHotkey(key);
         if (vk == 0) return;

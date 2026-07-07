@@ -61,6 +61,12 @@ internal sealed class LaunchedGame
     public int EmuStartupMinMs = -1, EmuShutdownMinMs = -1;
     public bool? EmuForceFocus;
 
+    // LiteBox-OWN options resolved (emulator override → global) at capture — LB has no field
+    // for these, they live in litebox-options.db. Snapshotted here because the resolver needs
+    // the emulator id, gone once the in-game surfaces run.
+    public bool StayOnTop;               // startup/end screens topmost without focus
+    public string ScreenCaptureKey = ""; // screenshot hotkey ("" = off for this launch)
+
     /// <summary>The game currently running, or null. Set by HostLaunch at launch,
     /// cleared in its exit finally.</summary>
     public static LaunchedGame? Current { get; private set; }
@@ -152,6 +158,18 @@ internal sealed class LaunchedGame
                     lg.EmuForceFocus = string.IsNullOrEmpty(ff) ? (bool?)null
                                      : string.Equals(ff, "true", StringComparison.OrdinalIgnoreCase);
                 }
+            }
+            catch { }
+
+            // LiteBox-own per-emulator options (litebox-options.db) resolved through the emulator.
+            try
+            {
+                string? emuId = emulator != null ? Safe(() => emulator.Id) : null;
+                lg.StayOnTop = LbApiHost.Host.Data.LiteBoxOption.ResolveBool(
+                    "StartupStayOnTop", emuId, Gameplay.GameplaySettings.StartupStayOnTop());
+                lg.ScreenCaptureKey = LbApiHost.Host.Data.LiteBoxOption.ResolveString(
+                    "ScreenCaptureKey", emuId, Gameplay.GameplaySettings.ScreenCaptureKey());
+                Console.WriteLine($"[litebox-opt] resolved stayOnTop={lg.StayOnTop} screenshotKey='{lg.ScreenCaptureKey}' (emu={emuId ?? "none"})");
             }
             catch { }
 

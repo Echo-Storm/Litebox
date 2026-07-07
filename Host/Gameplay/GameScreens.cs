@@ -39,7 +39,7 @@ internal static class GameScreens
         // StartupStayOnTop: the overlay never activates (WS_EX_NOACTIVATE) and keeps
         // TOPMOST for its whole duration — the emulator spawns, takes the focus and RUNS
         // behind the cover (RetroArch pause_nonactive included) until the timer reveals it.
-        bool stayTop = Safe2(GameplaySettings.StartupStayOnTop);
+        bool stayTop = snap?.StayOnTop ?? Safe2(GameplaySettings.StartupStayOnTop);
 
         UiThread.Invoke(() =>
         {
@@ -75,7 +75,7 @@ internal static class GameScreens
         var ctx = BuildCtx(snap);
         bool hide = rr.HideCursor;
 
-        bool stayTop = Safe2(GameplaySettings.StartupStayOnTop);
+        bool stayTop = snap?.StayOnTop ?? Safe2(GameplaySettings.StartupStayOnTop);
         UiThread.Invoke(() =>
         {
             lock (_lock)
