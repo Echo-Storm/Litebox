@@ -30,6 +30,14 @@ internal sealed class SmartCaptureConfig
     public int SustainMs = 600;
     public int MinSizePct = 50;
     public string Title = "";          // wildcard, "" = any window
+    public bool StopOnWindowClose;     // end the session when the game WINDOW closes (else process exit)
+
+    /// <summary>The keys stored in LiteBox.ini (global) / litebox-options.db (per-entity).</summary>
+    public static readonly string[] Keys =
+    {
+        "SmartCaptureEnabled", "SmartCaptureMode", "SmartCaptureMinFps", "SmartCaptureSustainMs",
+        "SmartCaptureMinSizePct", "SmartCaptureTitle", "SmartCaptureStopOnWindowClose",
+    };
 }
 
 internal static class SmartCapture
@@ -62,6 +70,7 @@ internal static class SmartCapture
         long lastPoll = 0;
         bool fps = cfg.Mode.Equals("fps", StringComparison.OrdinalIgnoreCase);
         bool size = cfg.Mode.Equals("size", StringComparison.OrdinalIgnoreCase);
+        IntPtr metHwnd = IntPtr.Zero;
 
         try
         {
@@ -69,7 +78,6 @@ internal static class SmartCapture
             {
                 long now = sw.ElapsedMilliseconds;
                 int dt = (int)(now - lastPoll); lastPoll = now;
-                bool met = false;
 
                 try
                 {
@@ -79,12 +87,12 @@ internal static class SmartCapture
                     foreach (var w in wins)
                     {
                         if (!WinScan.WildcardMatch(cfg.Title, w.Title)) continue;
-                        if (!fps && !size) { met = true; break; }   // "any"
+                        if (!fps && !size) { metHwnd = w.Hwnd; break; }   // "any"
                         if (size)
                         {
                             var mon = WinScan.MonitorBounds(w.Hwnd);
                             long monArea = (long)mon.W * mon.H;
-                            if (monArea > 0 && w.Area * 100L >= monArea * cfg.MinSizePct) { met = true; break; }
+                            if (monArea > 0 && w.Area * 100L >= monArea * cfg.MinSizePct) { metHwnd = w.Hwnd; break; }
                         }
                         else // fps: attach a meter, accumulate sustained-above-threshold time.
                         {
@@ -98,7 +106,7 @@ internal static class SmartCapture
                             double curFps = secs > 0 ? m.meter.TakeFrames() / secs : 0;
                             int sustained = curFps >= cfg.MinFps ? m.sustainedMs + dt : 0;
                             meters[w.Hwnd] = (m.meter, sustained);
-                            if (sustained >= cfg.SustainMs) { met = true; break; }
+                            if (sustained >= cfg.SustainMs) { metHwnd = w.Hwnd; break; }
                         }
                     }
                     // Drop meters for windows that vanished.
@@ -108,17 +116,35 @@ internal static class SmartCapture
                 }
                 catch { }
 
-                if (met && now >= floorMs)
+                if (metHwnd != IntPtr.Zero && now >= floorMs)
                 {
-                    Console.WriteLine($"[smartcapture] condition met at {now}ms — revealing");
+                    Console.WriteLine($"[smartcapture] condition met at {now}ms (hwnd=0x{metHwnd.ToInt64():X}) — revealing");
                     Fire(onReveal);
-                    return;
+                    break;
                 }
                 Thread.Sleep(PollMs);
             }
-            if (_run) { Console.WriteLine($"[smartcapture] safety max {maxMs}ms — revealing (fallback)"); Fire(onReveal); }
+            if (metHwnd == IntPtr.Zero)
+            {
+                if (_run) { Console.WriteLine($"[smartcapture] safety max {maxMs}ms — revealing (fallback)"); Fire(onReveal); }
+                return;
+            }
         }
         finally { foreach (var kv in meters) { try { kv.Value.meter.Dispose(); } catch { } } }
+
+        // Stop-on-window-close: keep watching the game window; when it closes, force the process
+        // tree to exit so the normal end-of-game flow (GAME OVER, cleanup) runs. Default off — the
+        // launch already waits on process exit, which is the usual "game ended".
+        if (cfg.StopOnWindowClose && metHwnd != IntPtr.Zero)
+        {
+            Console.WriteLine($"[smartcapture] watching hwnd=0x{metHwnd.ToInt64():X} for close (stop-on-window-close)");
+            while (_run && WinScan.Alive(metHwnd)) Thread.Sleep(300);
+            if (_run)
+            {
+                Console.WriteLine("[smartcapture] game window closed — ending process");
+                try { using var p = System.Diagnostics.Process.GetProcessById(rootPid); p.Kill(entireProcessTree: true); } catch { }
+            }
+        }
     }
 
     private static void Fire(Action a) { try { a(); } catch { } }

@@ -56,6 +56,10 @@ internal static class EditEmulatorWindow
         var (lbx, applyLbx) = BuildLiteBox(emu, s);
         w.AddSection("LiteBox", lbx, applyLbx);
 
+        var (scPanel, scSave) = Gameplay.SmartCaptureEditor.Build(
+            Data.LiteBoxOption.ScopeEmulator, Safe(() => emu.Id) ?? "", s, Bg, Fg, SubFg, Panel2, readOnly);
+        w.AddSection("Smart Capture", scPanel, readOnly ? null : scSave);
+
         AddScript(w, emu, "Pause Script", e => e.PauseAutoHotkeyScript, (e, v) => e.PauseAutoHotkeyScript = v);
         AddScript(w, emu, "Resume Script", e => e.ResumeAutoHotkeyScript, (e, v) => e.ResumeAutoHotkeyScript = v);
         AddScript(w, emu, "Reset Game Script", e => e.ResetAutoHotkeyScript, (e, v) => e.ResetAutoHotkeyScript = v);

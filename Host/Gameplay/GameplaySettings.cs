@@ -157,12 +157,13 @@ internal static class GameplaySettings
         int I(string key, int def) => int.TryParse(R(key, def.ToString()), out var n) ? n : def;
         return new SmartCaptureConfig
         {
-            Enabled    = R("SmartCaptureEnabled", "true").Equals("true", StringComparison.OrdinalIgnoreCase),
-            Mode       = R("SmartCaptureMode", "fps"),
-            MinFps     = I("SmartCaptureMinFps", 10),
-            SustainMs  = I("SmartCaptureSustainMs", 600),
-            MinSizePct = I("SmartCaptureMinSizePct", 50),
-            Title      = R("SmartCaptureTitle", ""),
+            Enabled           = R("SmartCaptureEnabled", "true").Equals("true", StringComparison.OrdinalIgnoreCase),
+            Mode              = R("SmartCaptureMode", "fps"),
+            MinFps            = I("SmartCaptureMinFps", 10),
+            SustainMs         = I("SmartCaptureSustainMs", 600),
+            MinSizePct        = I("SmartCaptureMinSizePct", 50),
+            Title             = R("SmartCaptureTitle", ""),
+            StopOnWindowClose = R("SmartCaptureStopOnWindowClose", "false").Equals("true", StringComparison.OrdinalIgnoreCase),
         };
     }
 

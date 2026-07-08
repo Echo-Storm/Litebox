@@ -185,7 +185,7 @@ internal sealed partial class EditGameWindow : Form   // Game Saves page lives i
         var cancel = FooterBtn("Cancel", Color.FromArgb(70, 70, 82));
         ok.Location = new Point(S(12), S(9));
         cancel.Location = new Point(S(112), S(9));
-        ok.Click += (_, _) => { SaveCurrent(); SaveCustomFields(); SaveAlternateNames(); SaveControllerSupport(); SaveControllerSupportMulti(); SaveLaunching(); DialogResult = DialogResult.OK; Close(); };
+        ok.Click += (_, _) => { SaveCurrent(); SaveCustomFields(); SaveAlternateNames(); SaveControllerSupport(); SaveControllerSupportMulti(); SaveLaunching(); SaveSmartCapture(); DialogResult = DialogResult.OK; Close(); };
         cancel.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
 
         var hint = new Label
@@ -277,6 +277,7 @@ internal sealed partial class EditGameWindow : Form   // Game Saves page lives i
             N("Emulation", "Emulation"),
             N("Root Folder", "RootFolder"),
             N("Startup/Pause", "StartupPause"),
+            N("Smart Capture", "SmartCapture"),
         });
 
         _tree.Nodes.AddRange(new[] { metadata, media, launching });
@@ -293,6 +294,16 @@ internal sealed partial class EditGameWindow : Form   // Game Saves page lives i
         TextRenderer.DrawText(e.Graphics, e.Node.Text, _tree.Font, e.Bounds, color,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
     }
+
+    private Action? _scSave;
+    private Control BuildSmartCapturePage()
+    {
+        var (panel, save) = Gameplay.SmartCaptureEditor.Build(
+            Data.LiteBoxOption.ScopeGame, Safe(() => _editGames[0].Id) ?? "", _s, Bg, Fg, SubFg, Field, _readOnly);
+        _scSave = save;
+        return panel;
+    }
+    private void SaveSmartCapture() { try { _scSave?.Invoke(); } catch { } }
 
     private void ShowPage(string key)
     {
@@ -314,6 +325,7 @@ internal sealed partial class EditGameWindow : Form   // Game Saves page lives i
                 "Emulation" => IsMulti ? Placeholder("Emulation") : BuildEmulationPage(),
                 "RootFolder" => IsMulti ? Placeholder("Root Folder") : BuildRootFolderPage(),
                 "StartupPause" => IsMulti ? Placeholder("Startup/Pause") : BuildStartupPausePage(),
+                "SmartCapture" => IsMulti ? Placeholder("Smart Capture") : BuildSmartCapturePage(),
                 _ => Placeholder(_tree.SelectedNode?.Text ?? key),
             };
             _pages[key] = page;
@@ -1008,7 +1020,7 @@ internal sealed partial class EditGameWindow : Form   // Game Saves page lives i
         if (IsMulti || _visible.Count == 0) return;
         int ni = _index + delta;
         if (ni < 0 || ni >= _visible.Count) return;
-        SaveCurrent(); SaveCustomFields(); SaveAlternateNames(); SaveControllerSupport(); SaveLaunching();
+        SaveCurrent(); SaveCustomFields(); SaveAlternateNames(); SaveControllerSupport(); SaveLaunching(); SaveSmartCapture();
         _index = ni;
         _editGames = new[] { _visible[_index] };
         LoadMetadata();

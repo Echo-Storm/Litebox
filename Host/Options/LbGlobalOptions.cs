@@ -158,6 +158,8 @@ internal static class LbGlobalOptions
         // OK would freeze the inherited value into the ini and stop it following LaunchBox.
         void BindIniHkFrom(HotkeyCaptureBox hb, string key, string initial)
             => applies.Add(() => { if (hb.HotkeyValue != initial) { ini.Set(key, hb.HotkeyValue); iniDirty = true; } });
+        void BindIniTxt(TextBox tb, string key) => applies.Add(() => { if (tb.Text != ini.Get(key, "")) { ini.Set(key, tb.Text); iniDirty = true; } });
+        void BindIniCbo(ComboBox cb, string key) => applies.Add(() => { var v = cb.SelectedItem as string ?? ""; if (v != ini.Get(key, "")) { ini.Set(key, v); iniDirty = true; } });
         void BindIniChk(CheckBox cb, string key, bool def = false) => applies.Add(() => { if (cb.Checked != ini.GetBool(key, def)) { ini.SetBool(key, cb.Checked); iniDirty = true; } });
         // The 13.28-format keys route through LbSettingsStore transparently (ProblemKeys →
         // LB XML on 13.28+, LiteBox DB on 13.27), so plain s.Get/s.Set is all this page needs.
@@ -237,6 +239,41 @@ internal static class LbGlobalOptions
             p.Controls.Add(Lbl("click, then press a key/combo  (empty = disabled)", new Point(S(378), S(12)), Dim));
             p.Controls.Add(Lbl("Saves a PNG of the game's monitor to <LB>\\Screenshots.", new Point(S(4), S(44)), Dim));
             BindIniHkFrom(sc, "ScreenCaptureKey", scInit);
+        }
+
+        // ── Smart Capture (LiteBox-own: reveal the startup screen when the game truly renders) ──
+        {
+            var p = Page("Smart Capture");
+            var en = Chk("Enable Smart Capture (reveal the startup screen when the game starts rendering)", ini.GetBool("SmartCaptureEnabled", true), new Point(S(4), S(8)));
+            p.Controls.Add(en);
+            p.Controls.Add(Lbl("Instead of a fixed timer, LiteBox detects when the game window is actually up.", new Point(S(24), S(30)), Dim));
+
+            p.Controls.Add(Lbl("Detection mode:", new Point(S(4), S(66))));
+            var mode = new ComboBox { Location = new Point(S(150), S(63)), Width = S(240), DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Panel2, ForeColor = Fg, FlatStyle = FlatStyle.Flat, Enabled = !readOnly };
+            mode.Items.AddRange(new object[] { "fps", "size", "any" });
+            mode.SelectedItem = (ini.Get("SmartCaptureMode", "fps") ?? "fps");
+            if (mode.SelectedIndex < 0) mode.SelectedIndex = 0;
+            p.Controls.Add(mode);
+            p.Controls.Add(Lbl("fps = window is rendering (robust) · size = window ≥ % of screen · any = any window appears", new Point(S(24), S(90)), Dim));
+
+            p.Controls.Add(Lbl("Minimum FPS:", new Point(S(4), S(122))));
+            var fps = Txt(ini.Get("SmartCaptureMinFps", "10"), new Point(S(150), S(119)), 70); p.Controls.Add(fps);
+            p.Controls.Add(Lbl("sustained for (ms):", new Point(S(250), S(122))));
+            var sus = Txt(ini.Get("SmartCaptureSustainMs", "600"), new Point(S(380), S(119)), 70); p.Controls.Add(sus);
+
+            p.Controls.Add(Lbl("Minimum window size (% of screen, 'size' mode):", new Point(S(4), S(154))));
+            var sz = Txt(ini.Get("SmartCaptureMinSizePct", "50"), new Point(S(340), S(151)), 70); p.Controls.Add(sz);
+
+            p.Controls.Add(Lbl("Window title filter (wildcard * ? — empty = any):", new Point(S(4), S(186))));
+            var title = Txt(ini.Get("SmartCaptureTitle", ""), new Point(S(340), S(183)), 220); p.Controls.Add(title);
+
+            var stopWin = Chk("End the session when the game window closes (instead of when the process exits)", ini.GetBool("SmartCaptureStopOnWindowClose", false), new Point(S(4), S(220)));
+            p.Controls.Add(stopWin);
+
+            BindIniChk(en, "SmartCaptureEnabled", true); BindIniCbo(mode, "SmartCaptureMode");
+            BindIniTxt(fps, "SmartCaptureMinFps"); BindIniTxt(sus, "SmartCaptureSustainMs");
+            BindIniTxt(sz, "SmartCaptureMinSizePct"); BindIniTxt(title, "SmartCaptureTitle");
+            BindIniChk(stopWin, "SmartCaptureStopOnWindowClose");
         }
 
         // Footer note: gameplay changes take effect on the next game launch.
