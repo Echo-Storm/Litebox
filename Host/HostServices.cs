@@ -363,9 +363,16 @@ internal static class HostLaunch
             Pause.PauseManager.Disarm();  // hotkey off + resume a still-frozen process + close the screen
             Gameplay.ScreenCapture.Disarm();
             Gameplay.SmartCapture.Stop();  // stop the reveal watcher (game exited before/after detection)
-            Gameplay.GameScreens.Close(); // drop any lingering startup overlay
-            AhkScript.KillGameScript();   // running script dies with the game (LB parity)
             var endSnap = LaunchedGame.Current;   // capture cosmetics before clearing (end screen needs them)
+            // Cover the exit transition RIGHT NOW — before the cleanup below AND before OnGameExited
+            // (which, under ExtendDB, reopens the web kiosk). Everything then happens BEHIND the GAME
+            // OVER cover, so neither LiteBox nor the kiosk is revealed until the shutdown screen ends.
+            // Previously the end screen was shown only at the very end of this block, so the game's exit
+            // uncovered LiteBox (or flashed the reopening kiosk) during play-time / progress / plugin work.
+            // ShowEndEager also drops any lingering startup cover, and no-ops (no flash) when the pause-menu
+            // exit already put an early cover up.
+            if (!DryRun) Gameplay.GameScreens.ShowEndEager(endSnap);
+            AhkScript.KillGameScript();   // running script dies with the game (LB parity)
             LaunchedGame.Clear();
             if (!DryRun && gi >= 0) { try { _store.JournalPlayTime(gi, (int)sw.Elapsed.TotalSeconds); } catch { } }
             // Per-version play time — same elapsed seconds as the game's (see JournalPlayStart above).

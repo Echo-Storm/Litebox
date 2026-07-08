@@ -115,8 +115,11 @@ internal static class GameScreens
         {
             lock (_lock)
             {
-                // Reuse the early "exit screen" cover if one is already up (no close+reopen flash).
-                if (_endCoverUp && _overlay != null) return;
+                // Reuse the early "exit screen" cover if one is already up (no close+reopen flash), but
+                // RE-ASSERT it to the front: OnGameExited may have reopened the web kiosk (which activates
+                // itself and goes TopMost). ForceToFront steals the foreground back → the kiosk deactivates
+                // → drops TopMost → GAME OVER stays on top for the whole hold.
+                if (_endCoverUp && _overlay != null) { try { _overlay.ForceToFront(8); } catch { } return; }
                 CloseLocked();
                 try { _overlay = new InfoOverlay(ctx, "GAME OVER", hide, noActivate: stayTop); _overlay.Show(); _overlay.ForceToFront(8); _endCoverUp = true; }
                 catch { CloseLocked(); }
