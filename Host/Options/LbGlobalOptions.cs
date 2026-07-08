@@ -195,79 +195,8 @@ internal static class LbGlobalOptions
             BindChk(use, "UseStartupScreen"); BindTxt(st, "StartupScreenPostLaunchDisplayTime");
             BindTxt(sh, "ShutdownScreenPostReadyDisplayTime"); BindChk(hc, "HideMouseCursorOnStartupScreens");
             BindChk(ff, "ForceFrontendFocusOnShutdown");
-
-            // ── LiteBox-specific group (blue frame): stay-on-top + Smart Capture + exit-screen-early ──
-            // (+ the web-return timing when ExtendDB is loaded — that combo is what makes the frame taller).
-            bool webAvail = Media.KioskBridge.Available;
-            var grp = LiteBoxGroup("LiteBox-specific", 2, 176, 700, webAvail ? 500 : 416); p.Controls.Add(grp);
-            void GAdd(Control c) => grp.Controls.Add(c);
-            var stp = new CheckBox { Text = "Keep startup/end screens on top without taking focus (non-blocking)", Location = new Point(S(12), S(22)), AutoSize = true, ForeColor = Fg, BackColor = Bg, Checked = ini.GetBool("StartupStayOnTop", false), Enabled = !readOnly };
-            GAdd(stp);
-            GAdd(new Label { Text = "The screen covers the display while the game keeps the focus behind it.", Location = new Point(S(30), S(44)), AutoSize = true, ForeColor = Dim, BackColor = Bg });
-            BindIniChk(stp, "StartupStayOnTop");
-
-            GAdd(new Label { Text = "Smart Capture — reveal the startup screen when the game actually renders:", Location = new Point(S(12), S(76)), AutoSize = true, ForeColor = LbxAccent, BackColor = Bg, Font = new Font("Segoe UI", 8.5f, FontStyle.Bold) });
-            var scEn = new CheckBox { Text = "Enable Smart Capture", Location = new Point(S(12), S(100)), AutoSize = true, ForeColor = Fg, BackColor = Bg, Checked = ini.GetBool("SmartCaptureEnabled", true), Enabled = !readOnly };
-            GAdd(scEn);
-            GAdd(new Label { Text = "Detection mode:", Location = new Point(S(12), S(130)), AutoSize = true, ForeColor = Fg, BackColor = Bg });
-            var scMode = Cbo(new[] { "fps", "size", "any" }, ini.Get("SmartCaptureMode", "fps") ?? "fps", new Point(S(150), S(127)), 200); GAdd(scMode);
-            GAdd(new Label { Text = "fps = rendering (robust) · size = window ≥ % of screen · any = any window", Location = new Point(S(30), S(152)), AutoSize = true, ForeColor = Dim, BackColor = Bg });
-            GAdd(new Label { Text = "Minimum FPS:", Location = new Point(S(12), S(182)), AutoSize = true, ForeColor = Fg, BackColor = Bg });
-            var scFps = Txt(ini.Get("SmartCaptureMinFps", "10"), new Point(S(150), S(179)), 70); GAdd(scFps);
-            GAdd(new Label { Text = "sustained (ms):", Location = new Point(S(250), S(182)), AutoSize = true, ForeColor = Fg, BackColor = Bg });
-            var scSus = Txt(ini.Get("SmartCaptureSustainMs", "600"), new Point(S(370), S(179)), 70); GAdd(scSus);
-            GAdd(new Label { Text = "Min window size (% of screen):", Location = new Point(S(12), S(212)), AutoSize = true, ForeColor = Fg, BackColor = Bg });
-            var scSz = Txt(ini.Get("SmartCaptureMinSizePct", "50"), new Point(S(250), S(209)), 70); GAdd(scSz);
-            GAdd(new Label { Text = "Window title filter (wildcard):", Location = new Point(S(12), S(242)), AutoSize = true, ForeColor = Fg, BackColor = Bg });
-            var scTitle = Txt(ini.Get("SmartCaptureTitle", ""), new Point(S(250), S(239)), 220); GAdd(scTitle);
-            var scStop = new CheckBox { Text = "End the session when the game window closes (instead of process exit)", Location = new Point(S(12), S(276)), AutoSize = true, ForeColor = Fg, BackColor = Bg, Checked = ini.GetBool("SmartCaptureStopOnWindowClose", false), Enabled = !readOnly };
-            GAdd(scStop);
-            GAdd(new Label { Text = "The Post-Launch Display Time above then counts from when the game starts rendering.", Location = new Point(S(30), S(300)), AutoSize = true, ForeColor = Dim, BackColor = Bg });
-            BindIniChk(scEn, "SmartCaptureEnabled", true); BindIniCbo(scMode, "SmartCaptureMode");
-            BindIniTxt(scFps, "SmartCaptureMinFps"); BindIniTxt(scSus, "SmartCaptureSustainMs");
-            BindIniTxt(scSz, "SmartCaptureMinSizePct"); BindIniTxt(scTitle, "SmartCaptureTitle");
-            BindIniChk(scStop, "SmartCaptureStopOnWindowClose");
-
-            // Exit / end screen early (LiteBox-own): on a pause-menu Exit, show the end screen N ms
-            // after the exit script (Escape by default) rather than waiting for the process to close.
-            GAdd(new Label { Text = "Exit / end screen — cover the display sooner on exit:", Location = new Point(S(12), S(326)), AutoSize = true, ForeColor = LbxAccent, BackColor = Bg, Font = new Font("Segoe UI", 8.5f, FontStyle.Bold) });
-            var exG = Gameplay.GameplaySettings.ExitScreenEagerMsGlobal();
-            var exEn = new CheckBox { Text = "Show the exit/end screen early (after the pause-menu exit script)", Location = new Point(S(12), S(350)), AutoSize = true, ForeColor = Fg, BackColor = Bg, Checked = exG >= 0, Enabled = !readOnly };
-            GAdd(exEn);
-            GAdd(new Label { Text = "Delay after exit script:", Location = new Point(S(30), S(382)), AutoSize = true, ForeColor = Fg, BackColor = Bg });
-            var exMs = new NumericUpDown { Location = new Point(S(200), S(379)), Width = S(90), Minimum = 0, Maximum = 10000, Increment = 100, BackColor = Panel2, ForeColor = Fg, BorderStyle = BorderStyle.FixedSingle, Value = Math.Max(0, Math.Min(10000, exG < 0 ? 250 : exG)), Enabled = !readOnly && exG >= 0 };
-            GAdd(exMs);
-            GAdd(new Label { Text = "ms", Location = new Point(S(296), S(382)), AutoSize = true, ForeColor = Dim, BackColor = Bg });
-            exEn.CheckedChanged += (_, _) => exMs.Enabled = !readOnly && exEn.Checked;
-            applies.Add(() =>
-            {
-                int curEager = int.TryParse(ini.Get("ExitScreenEagerMs"), out var ce) ? ce : -1;
-                var ev = exEn.Checked ? (int)exMs.Value : -1;
-                if (ev != curEager) { ini.Set("ExitScreenEagerMs", ev.ToString()); iniDirty = true; }
-            });
-
-            // Web-return timing — WHEN the ExtendDB web kiosk (BigBox Web / LaunchBox Web) reappears
-            // after a game, relative to the GAME OVER screen. Only shown when ExtendDB is loaded (no
-            // kiosk otherwise). Applies to both kiosk themes. No end screen → all behave "immediate".
-            if (webAvail)
-            {
-                GAdd(new Label { Text = "Web frontend (BigBox / LaunchBox Web kiosk) return after a game:", Location = new Point(S(12), S(410)), AutoSize = true, ForeColor = LbxAccent, BackColor = Bg, Font = new Font("Segoe UI", 8.5f, FontStyle.Bold) });
-                var wrItems = new[]
-                {
-                    "Behind the GAME OVER screen (loads hidden, shown at close)",
-                    "After the GAME OVER screen (returns once it closes)",
-                    "At game exit (immediate — may appear before it)",
-                };
-                var wrCur = Gameplay.GameplaySettings.WebReturnTiming();
-                var wr = Cbo(wrItems, wrItems[wrCur == "after" ? 1 : wrCur == "immediate" ? 2 : 0], new Point(S(12), S(434)), 470);
-                GAdd(wr);
-                GAdd(new Label { Text = "Behind = reloaded during GAME OVER, no wait after. After = delays the whole exit cleanup by the screen's time. Immediate = LaunchBox parity.", Location = new Point(S(12), S(464)), AutoSize = true, ForeColor = Dim, BackColor = Bg });
-                applies.Add(() =>
-                {
-                    var v = wr.SelectedIndex == 1 ? "after" : wr.SelectedIndex == 2 ? "immediate" : "behind";
-                    if (v != ini.Get("WebReturnTiming", "behind")) { ini.Set("WebReturnTiming", v); iniDirty = true; }
-                });
-            }
+            // (LiteBox-only startup extras — stay-on-top / Smart Capture / exit-early / web-return —
+            //  now live on the dedicated "LiteBox-Options" tab, not appended here.)
         }
 
         // ── Game Pause ──
@@ -282,33 +211,9 @@ internal static class LbGlobalOptions
             var fade = Chk("Enable Fading", s.GetBool("PauseScreenFading", true), new Point(S(4), S(76)));
             var mute = Chk("Mute Audio During Transitions", s.GetBool("PauseScreenMuting", true), new Point(S(4), S(102)));
             p.Controls.AddRange(new Control[] { fade, mute });
-            // Controller pause (LiteBox-own, LiteBox.ini): a button/combo on XInput controller 1
-            // pauses the game — twin of the keyboard key. The pause menu is already gamepad-navigable.
-            var padEn = Chk("Pause with a controller (XInput) button/combo", ini.GetBool("PadPauseEnabled", false), new Point(S(4), S(136)));
-            p.Controls.Add(padEn);
-            p.Controls.Add(Lbl("Button:", new Point(S(24), S(166))));
-            var padBtn = new ComboBox { Location = new Point(S(120), S(163)), Width = S(220), DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Panel2, ForeColor = Fg, FlatStyle = FlatStyle.Flat };
-            padBtn.Items.AddRange(Pause.XInputPad.ComboPresets);
-            var padBtnCur = ini.Get("PadPauseButton"); if (string.IsNullOrEmpty(padBtnCur)) padBtnCur = "Back+Start";
-            padBtn.SelectedIndex = Math.Max(0, Array.IndexOf(Pause.XInputPad.ComboPresets, padBtnCur));
-            p.Controls.Add(padBtn);
-            // Pause mode (LiteBox-own, moved here from the old standalone "Pause screen" section):
-            // legacy native overlay vs the not-yet-implemented WebView mode.
-            p.Controls.Add(Lbl("Pause mode:", new Point(S(4), S(200))));
-            var pmode = new ComboBox { Location = new Point(S(120), S(197)), Width = S(200), DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Panel2, ForeColor = Fg, FlatStyle = FlatStyle.Flat, Enabled = !readOnly };
-            pmode.Items.AddRange(new object[] { "legacy", "advanced" }); pmode.SelectedItem = ini.Get("PauseMode", "legacy") ?? "legacy"; if (pmode.SelectedIndex < 0) pmode.SelectedIndex = 0;
-            p.Controls.Add(pmode);
-            p.Controls.Add(Lbl("legacy = native overlay · advanced = WebView (not implemented yet, falls back to legacy)", new Point(S(24), S(222)), Dim));
+            // (Controller pause + pause mode — LiteBox-only — moved to the "LiteBox-Options" tab.)
             BindChk(use, "UsePauseScreen"); BindIniHkFrom(pk, "PauseHotkey", pkInit);
             BindChk(fade, "PauseScreenFading"); BindChk(mute, "PauseScreenMuting");
-            applies.Add(() =>
-            {
-                if (padEn.Checked != ini.GetBool("PadPauseEnabled", false)) { ini.SetBool("PadPauseEnabled", padEn.Checked); iniDirty = true; }
-                var bv = padBtn.SelectedItem as string ?? "Back+Start";
-                if (bv != ini.Get("PadPauseButton")) { ini.Set("PadPauseButton", bv); iniDirty = true; }
-                var pm = pmode.SelectedItem as string ?? "legacy";
-                if (pm != ini.Get("PauseMode")) { ini.Set("PauseMode", pm); iniDirty = true; }
-            });
         }
 
         // ── Screen Capture ──
@@ -320,6 +225,100 @@ internal static class LbGlobalOptions
             p.Controls.Add(Lbl("click, then press a key/combo  (empty = disabled)", new Point(S(378), S(12)), Dim));
             p.Controls.Add(Lbl("Saves a PNG of the game's monitor to <LB>\\Screenshots.", new Point(S(4), S(44)), Dim));
             BindIniHkFrom(sc, "ScreenCaptureKey", scInit);
+        }
+
+        // ── LiteBox-Options: every LiteBox-only gameplay extra, grouped away from the LB-native tabs ──
+        {
+            var p = Page("LiteBox-Options"); p.AutoScroll = true;
+            Label Head(string t, int y) => new() { Text = t, Location = new Point(S(4), S(y)), AutoSize = true, ForeColor = LbxAccent, BackColor = Bg, Font = new Font("Segoe UI", 9f, FontStyle.Bold) };
+
+            p.Controls.Add(Head("Startup / end screens", 6));
+            var stp = Chk("Keep startup/end screens on top without taking focus (non-blocking)", ini.GetBool("StartupStayOnTop", false), new Point(S(12), S(30)));
+            p.Controls.Add(stp);
+            p.Controls.Add(Lbl("The screen covers the display while the game keeps the focus behind it.", new Point(S(30), S(52)), Dim));
+            BindIniChk(stp, "StartupStayOnTop");
+
+            p.Controls.Add(new Label { Text = "Smart Capture — reveal the startup screen when the game actually renders:", Location = new Point(S(12), S(84)), AutoSize = true, ForeColor = LbxAccent, BackColor = Bg, Font = new Font("Segoe UI", 8.5f, FontStyle.Bold) });
+            var scEn = Chk("Enable Smart Capture", ini.GetBool("SmartCaptureEnabled", true), new Point(S(12), S(108)));
+            p.Controls.Add(scEn);
+            p.Controls.Add(Lbl("Detection mode:", new Point(S(12), S(138))));
+            var scMode = Cbo(new[] { "fps", "size", "any" }, ini.Get("SmartCaptureMode", "fps") ?? "fps", new Point(S(150), S(135)), 200); p.Controls.Add(scMode);
+            p.Controls.Add(Lbl("fps = rendering (robust) · size = window ≥ % of screen · any = any window", new Point(S(30), S(160)), Dim));
+            p.Controls.Add(Lbl("Minimum FPS:", new Point(S(12), S(190))));
+            var scFps = Txt(ini.Get("SmartCaptureMinFps", "10"), new Point(S(150), S(187)), 70); p.Controls.Add(scFps);
+            p.Controls.Add(Lbl("sustained (ms):", new Point(S(250), S(190))));
+            var scSus = Txt(ini.Get("SmartCaptureSustainMs", "600"), new Point(S(370), S(187)), 70); p.Controls.Add(scSus);
+            p.Controls.Add(Lbl("Min window size (% of screen):", new Point(S(12), S(220))));
+            var scSz = Txt(ini.Get("SmartCaptureMinSizePct", "50"), new Point(S(250), S(217)), 70); p.Controls.Add(scSz);
+            p.Controls.Add(Lbl("Window title filter (wildcard):", new Point(S(12), S(250))));
+            var scTitle = Txt(ini.Get("SmartCaptureTitle", ""), new Point(S(250), S(247)), 220); p.Controls.Add(scTitle);
+            var scStop = Chk("End the session when the game window closes (instead of process exit)", ini.GetBool("SmartCaptureStopOnWindowClose", false), new Point(S(12), S(282)));
+            p.Controls.Add(scStop);
+            p.Controls.Add(Lbl("The Post-Launch Display Time (Game Startup tab) then counts from when the game starts rendering.", new Point(S(30), S(306)), Dim));
+            BindIniChk(scEn, "SmartCaptureEnabled", true); BindIniCbo(scMode, "SmartCaptureMode");
+            BindIniTxt(scFps, "SmartCaptureMinFps"); BindIniTxt(scSus, "SmartCaptureSustainMs");
+            BindIniTxt(scSz, "SmartCaptureMinSizePct"); BindIniTxt(scTitle, "SmartCaptureTitle");
+            BindIniChk(scStop, "SmartCaptureStopOnWindowClose");
+
+            p.Controls.Add(new Label { Text = "Exit / end screen — cover the display sooner on exit:", Location = new Point(S(12), S(338)), AutoSize = true, ForeColor = LbxAccent, BackColor = Bg, Font = new Font("Segoe UI", 8.5f, FontStyle.Bold) });
+            var exG = Gameplay.GameplaySettings.ExitScreenEagerMsGlobal();
+            var exEn = Chk("Show the exit/end screen early (after the pause-menu exit script)", exG >= 0, new Point(S(12), S(362)));
+            p.Controls.Add(exEn);
+            p.Controls.Add(Lbl("Delay after exit script:", new Point(S(30), S(394))));
+            var exMs = new NumericUpDown { Location = new Point(S(200), S(391)), Width = S(90), Minimum = 0, Maximum = 10000, Increment = 100, BackColor = Panel2, ForeColor = Fg, BorderStyle = BorderStyle.FixedSingle, Value = Math.Max(0, Math.Min(10000, exG < 0 ? 250 : exG)), Enabled = !readOnly && exG >= 0 };
+            p.Controls.Add(exMs);
+            p.Controls.Add(Lbl("ms", new Point(S(296), S(394)), Dim));
+            exEn.CheckedChanged += (_, _) => exMs.Enabled = !readOnly && exEn.Checked;
+            applies.Add(() =>
+            {
+                int curEager = int.TryParse(ini.Get("ExitScreenEagerMs"), out var ce) ? ce : -1;
+                var ev = exEn.Checked ? (int)exMs.Value : -1;
+                if (ev != curEager) { ini.Set("ExitScreenEagerMs", ev.ToString()); iniDirty = true; }
+            });
+
+            int pauseY = 434;
+            if (Media.KioskBridge.Available)
+            {
+                p.Controls.Add(new Label { Text = "Web frontend (BigBox / LaunchBox Web kiosk) return after a game:", Location = new Point(S(12), S(434)), AutoSize = true, ForeColor = LbxAccent, BackColor = Bg, Font = new Font("Segoe UI", 8.5f, FontStyle.Bold) });
+                var wrItems = new[]
+                {
+                    "Behind the GAME OVER screen (loads hidden, shown at close)",
+                    "After the GAME OVER screen (returns once it closes)",
+                    "At game exit (immediate — may appear before it)",
+                };
+                var wrCur = Gameplay.GameplaySettings.WebReturnTiming();
+                var wr = Cbo(wrItems, wrItems[wrCur == "after" ? 1 : wrCur == "immediate" ? 2 : 0], new Point(S(12), S(458)), 470); p.Controls.Add(wr);
+                p.Controls.Add(Lbl("Behind = reloaded during GAME OVER, no wait after. After = delays the whole exit cleanup by the screen's time. Immediate = LaunchBox parity.", new Point(S(12), S(488)), Dim));
+                applies.Add(() =>
+                {
+                    var v = wr.SelectedIndex == 1 ? "after" : wr.SelectedIndex == 2 ? "immediate" : "behind";
+                    if (v != ini.Get("WebReturnTiming", "behind")) { ini.Set("WebReturnTiming", v); iniDirty = true; }
+                });
+                pauseY = 524;
+            }
+
+            p.Controls.Add(Head("Pause", pauseY));
+            var padEn = Chk("Pause with a controller (XInput) button/combo", ini.GetBool("PadPauseEnabled", false), new Point(S(12), S(pauseY + 26)));
+            p.Controls.Add(padEn);
+            p.Controls.Add(Lbl("Button:", new Point(S(30), S(pauseY + 56))));
+            var padBtn = new ComboBox { Location = new Point(S(130), S(pauseY + 53)), Width = S(220), DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Panel2, ForeColor = Fg, FlatStyle = FlatStyle.Flat, Enabled = !readOnly };
+            padBtn.Items.AddRange(Pause.XInputPad.ComboPresets);
+            var padBtnCur = ini.Get("PadPauseButton"); if (string.IsNullOrEmpty(padBtnCur)) padBtnCur = "Back+Start";
+            padBtn.SelectedIndex = Math.Max(0, Array.IndexOf(Pause.XInputPad.ComboPresets, padBtnCur));
+            p.Controls.Add(padBtn);
+            p.Controls.Add(Lbl("Pause mode:", new Point(S(12), S(pauseY + 90))));
+            var pmode = new ComboBox { Location = new Point(S(130), S(pauseY + 87)), Width = S(200), DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Panel2, ForeColor = Fg, FlatStyle = FlatStyle.Flat, Enabled = !readOnly };
+            pmode.Items.AddRange(new object[] { "legacy", "advanced" }); pmode.SelectedItem = ini.Get("PauseMode", "legacy") ?? "legacy"; if (pmode.SelectedIndex < 0) pmode.SelectedIndex = 0;
+            p.Controls.Add(pmode);
+            p.Controls.Add(Lbl("legacy = native overlay · advanced = WebView (not implemented yet, falls back to legacy)", new Point(S(30), S(pauseY + 116)), Dim));
+            applies.Add(() =>
+            {
+                if (padEn.Checked != ini.GetBool("PadPauseEnabled", false)) { ini.SetBool("PadPauseEnabled", padEn.Checked); iniDirty = true; }
+                var bv = padBtn.SelectedItem as string ?? "Back+Start";
+                if (bv != ini.Get("PadPauseButton")) { ini.Set("PadPauseButton", bv); iniDirty = true; }
+                var pm = pmode.SelectedItem as string ?? "legacy";
+                if (pm != ini.Get("PauseMode")) { ini.Set("PauseMode", pm); iniDirty = true; }
+            });
         }
 
         // Footer note: gameplay changes take effect on the next game launch.
