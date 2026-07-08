@@ -47,23 +47,26 @@ internal static class SmartCapture
     private static Thread? _thread;
     private static volatile bool _run;
 
-    /// <summary>Start watching. Reveals via <paramref name="onReveal"/> once (condition met and
-    /// past <paramref name="minFloorMs"/>, or the safety max). No-op if disabled.</summary>
-    public static void Start(int rootPid, SmartCaptureConfig cfg, int minFloorMs, int safetyMaxMs, Action onReveal)
+    /// <summary>Start watching. Reveals via <paramref name="onReveal"/> once the game is detected
+    /// rendering, then <paramref name="displayMs"/> (the Post-Launch Display Time) AFTER the render
+    /// actually started — the detection window (SustainMs in fps mode) is subtracted because it
+    /// already elapsed while confirming. Falls back to <paramref name="safetyMaxMs"/> if the game
+    /// is never detected (exclusive fullscreen). No-op if disabled.</summary>
+    public static void Start(int rootPid, SmartCaptureConfig cfg, int displayMs, int safetyMaxMs, Action onReveal)
     {
         Stop();
         if (!cfg.Enabled) return;
         _run = true;
-        _thread = new Thread(() => Run(rootPid, cfg, Math.Max(0, minFloorMs), Math.Max(1000, safetyMaxMs), onReveal))
+        _thread = new Thread(() => Run(rootPid, cfg, Math.Max(0, displayMs), Math.Max(1000, safetyMaxMs), onReveal))
         { IsBackground = true, Name = "LiteBox-smartcapture" };
         _thread.Start();
         Console.WriteLine($"[smartcapture] watching pid={rootPid} mode={cfg.Mode} minFps={cfg.MinFps} sustain={cfg.SustainMs}ms " +
-                          $"minSize={cfg.MinSizePct}% title='{cfg.Title}' floor={minFloorMs}ms max={safetyMaxMs}ms");
+                          $"minSize={cfg.MinSizePct}% title='{cfg.Title}' displayTime={displayMs}ms max={safetyMaxMs}ms");
     }
 
     public static void Stop() { _run = false; _thread = null; }
 
-    private static void Run(int rootPid, SmartCaptureConfig cfg, int floorMs, int maxMs, Action onReveal)
+    private static void Run(int rootPid, SmartCaptureConfig cfg, int displayMs, int maxMs, Action onReveal)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var meters = new Dictionary<IntPtr, (WgcFps meter, int sustainedMs)>();
@@ -71,64 +74,79 @@ internal static class SmartCapture
         bool fps = cfg.Mode.Equals("fps", StringComparison.OrdinalIgnoreCase);
         bool size = cfg.Mode.Equals("size", StringComparison.OrdinalIgnoreCase);
         IntPtr metHwnd = IntPtr.Zero;
+        long revealAt = -1;   // absolute ms: render-start + displayTime, set when detected
 
         try
         {
-            while (_run && sw.ElapsedMilliseconds < maxMs)
+            while (_run)
             {
                 long now = sw.ElapsedMilliseconds;
                 int dt = (int)(now - lastPoll); lastPoll = now;
 
-                try
+                if (metHwnd == IntPtr.Zero)
                 {
-                    var tree = WinScan.BuildTree((uint)rootPid);
-                    var wins = WinScan.TreeWindows(tree);
-
-                    foreach (var w in wins)
+                    try
                     {
-                        if (!WinScan.WildcardMatch(cfg.Title, w.Title)) continue;
-                        if (!fps && !size) { metHwnd = w.Hwnd; break; }   // "any"
-                        if (size)
+                        var tree = WinScan.BuildTree((uint)rootPid);
+                        var wins = WinScan.TreeWindows(tree);
+                        foreach (var w in wins)
                         {
-                            var mon = WinScan.MonitorBounds(w.Hwnd);
-                            long monArea = (long)mon.W * mon.H;
-                            if (monArea > 0 && w.Area * 100L >= monArea * cfg.MinSizePct) { metHwnd = w.Hwnd; break; }
-                        }
-                        else // fps: attach a meter, accumulate sustained-above-threshold time.
-                        {
-                            if (!meters.TryGetValue(w.Hwnd, out var m))
+                            if (!WinScan.WildcardMatch(cfg.Title, w.Title)) continue;
+                            if (!fps && !size) { metHwnd = w.Hwnd; break; }   // "any"
+                            if (size)
                             {
-                                var meter = WgcFps.TryCreate(w.Hwnd);
-                                if (meter == null) continue;
-                                m = (meter, 0); meters[w.Hwnd] = m;
+                                var mon = WinScan.MonitorBounds(w.Hwnd);
+                                long monArea = (long)mon.W * mon.H;
+                                if (monArea > 0 && w.Area * 100L >= monArea * cfg.MinSizePct) { metHwnd = w.Hwnd; break; }
                             }
-                            double secs = dt / 1000.0;
-                            double curFps = secs > 0 ? m.meter.TakeFrames() / secs : 0;
-                            int sustained = curFps >= cfg.MinFps ? m.sustainedMs + dt : 0;
-                            meters[w.Hwnd] = (m.meter, sustained);
-                            if (sustained >= cfg.SustainMs) { metHwnd = w.Hwnd; break; }
+                            else // fps: attach a meter, accumulate sustained-above-threshold time.
+                            {
+                                if (!meters.TryGetValue(w.Hwnd, out var m))
+                                {
+                                    var meter = WgcFps.TryCreate(w.Hwnd);
+                                    if (meter == null) continue;
+                                    m = (meter, 0); meters[w.Hwnd] = m;
+                                }
+                                double secs = dt / 1000.0;
+                                double curFps = secs > 0 ? m.meter.TakeFrames() / secs : 0;
+                                int sustained = curFps >= cfg.MinFps ? m.sustainedMs + dt : 0;
+                                meters[w.Hwnd] = (m.meter, sustained);
+                                if (sustained >= cfg.SustainMs) { metHwnd = w.Hwnd; break; }
+                            }
                         }
+                        if (fps && meters.Count > 0)
+                            foreach (var h in new List<IntPtr>(meters.Keys))
+                                if (!WinScan.Alive(h)) { try { meters[h].meter.Dispose(); } catch { } meters.Remove(h); }
                     }
-                    // Drop meters for windows that vanished.
-                    if (fps && meters.Count > 0)
-                        foreach (var h in new List<IntPtr>(meters.Keys))
-                            if (!WinScan.Alive(h)) { try { meters[h].meter.Dispose(); } catch { } meters.Remove(h); }
-                }
-                catch { }
+                    catch { }
 
-                if (metHwnd != IntPtr.Zero && now >= floorMs)
+                    if (metHwnd != IntPtr.Zero)
+                    {
+                        // The display time counts from when the game STARTED rendering, not from
+                        // this confirmation. In fps mode the render started SustainMs ago (that
+                        // window was spent confirming), so subtract it. size/any are instantaneous.
+                        int detWindow = fps ? cfg.SustainMs : 0;
+                        revealAt = now + Math.Max(0, displayMs - detWindow);
+                        Console.WriteLine($"[smartcapture] rendering detected at {now}ms (hwnd=0x{metHwnd.ToInt64():X}) — " +
+                                          $"revealing at {revealAt}ms ({displayMs}ms display − {detWindow}ms det window after detection)");
+                    }
+                }
+
+                if (revealAt >= 0 && now >= revealAt)
                 {
-                    Console.WriteLine($"[smartcapture] condition met at {now}ms (hwnd=0x{metHwnd.ToInt64():X}) — revealing");
+                    Console.WriteLine($"[smartcapture] revealing at {now}ms");
                     Fire(onReveal);
                     break;
                 }
+                if (metHwnd == IntPtr.Zero && now >= maxMs)
+                {
+                    Console.WriteLine($"[smartcapture] safety max {maxMs}ms — revealing (fallback, no render detected)");
+                    Fire(onReveal);
+                    return;
+                }
                 Thread.Sleep(PollMs);
             }
-            if (metHwnd == IntPtr.Zero)
-            {
-                if (_run) { Console.WriteLine($"[smartcapture] safety max {maxMs}ms — revealing (fallback)"); Fire(onReveal); }
-                return;
-            }
+            if (metHwnd == IntPtr.Zero) return;
         }
         finally { foreach (var kv in meters) { try { kv.Value.meter.Dispose(); } catch { } } }
 

@@ -325,23 +325,23 @@ internal static class HostLaunch
                     // blind timer. Resolved game → emulator → global; when on, the cover uses a
                     // safety-max and the coordinator closes it early (GameScreens.Close).
                     var scCfg = Gameplay.GameplaySettings.ResolveSmartCapture(SafeStr(() => emulator?.Id), SafeStr(() => game?.Id));
-                    // The Post-Launch Display Time stays a MINIMUM even with SmartCapture: the cover
-                    // shows for at least that long, and SmartCapture only avoids revealing EARLY when
-                    // the game isn't ready yet (reveal = max(detection, displayTime)). The safety max
-                    // is the ceiling if detection never fires (exclusive fullscreen).
+                    // Post-Launch Display Time: the cover shows for this long AFTER the game starts
+                    // rendering (SmartCapture detects the render, then keeps the cover displayMs more
+                    // — the detection window is subtracted inside). Safety max = fallback if the game
+                    // is never detected (exclusive fullscreen).
                     int scDisplay = SafeNullableInt(() => Gameplay.GameplaySettings.Resolve(LaunchedGame.Current)?.StartupMinMs) ?? 2000;
-                    int scFloor = scDisplay;
                     int scMax = Math.Max(scDisplay, 15000);
+                    int scBackstop = scMax + scDisplay + 5000;   // the coordinator owns the reveal; this is a last-resort cover timer
                     Action<Process> onSpawned = p =>
                     {
                         if (main.Value.useEmu && emulator != null) Pause.PauseManager.Arm(p, emulator, game);
                         Diag.RenderProbe.MaybeStart(p);   // no-op unless LITEBOX_RENDERPROBE=1
                         if (scCfg.Enabled && !DryRun)
-                            Gameplay.SmartCapture.Start(p.Id, scCfg, scFloor, scMax, () => Gameplay.GameScreens.Close());
+                            Gameplay.SmartCapture.Start(p.Id, scCfg, scDisplay, scMax, () => Gameplay.GameScreens.Close());
                     };
-                    // Startup screen ("NOW LOADING…") — shown just before the emulator spawns.
-                    // SmartCapture on → cover held to the safety-max (coordinator reveals earlier).
-                    if (!DryRun) Gameplay.GameScreens.ShowStartup(LaunchedGame.Current, scCfg.Enabled ? scMax : (int?)null);
+                    // Startup screen ("NOW LOADING…"). SmartCapture on → cover held to a generous
+                    // backstop; the coordinator closes it at render-start + displayTime.
+                    if (!DryRun) Gameplay.GameScreens.ShowStartup(LaunchedGame.Current, scCfg.Enabled ? scBackstop : (int?)null);
                     RunProcess(main.Value.path, main.Value.args, emulator, game, main.Value.useEmu, "main", onSpawned);
                 }
                 else if (!DryRun)
