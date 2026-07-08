@@ -256,6 +256,16 @@ internal static class LbGlobalOptions
             pmode.Items.AddRange(new object[] { "legacy", "advanced" }); pmode.SelectedItem = ini.Get("PauseMode", "legacy") ?? "legacy"; if (pmode.SelectedIndex < 0) pmode.SelectedIndex = 0;
             p.Controls.Add(pmode);
             p.Controls.Add(Lbl("legacy = native overlay · advanced = WebView (not implemented yet, falls back to legacy)", new Point(S(24), S(222)), Dim));
+            // Exit screen early (LiteBox-own): on a pause-menu exit, show the end screen N ms after the
+            // exit script rather than waiting for the process to close. -1 in the ini = disabled.
+            var eagerG = Gameplay.GameplaySettings.ExitScreenEagerMsGlobal();
+            var eagerEn = Chk("Show the exit screen early (after the pause-menu exit script)", eagerG >= 0, new Point(S(4), S(252)));
+            p.Controls.Add(eagerEn);
+            p.Controls.Add(Lbl("Delay after exit script:", new Point(S(24), S(284))));
+            var eagerMs = new NumericUpDown { Location = new Point(S(180), S(281)), Width = S(90), Minimum = 0, Maximum = 10000, Increment = 100, BackColor = Panel2, ForeColor = Fg, BorderStyle = BorderStyle.FixedSingle, Value = Math.Max(0, Math.Min(10000, eagerG < 0 ? 250 : eagerG)), Enabled = !readOnly && eagerG >= 0 };
+            p.Controls.Add(eagerMs);
+            p.Controls.Add(Lbl("ms", new Point(S(276), S(284)), Dim));
+            eagerEn.CheckedChanged += (_, _) => eagerMs.Enabled = !readOnly && eagerEn.Checked;
             BindChk(use, "UsePauseScreen"); BindIniHkFrom(pk, "PauseHotkey", pkInit);
             BindChk(fade, "PauseScreenFading"); BindChk(mute, "PauseScreenMuting");
             applies.Add(() =>
@@ -265,6 +275,9 @@ internal static class LbGlobalOptions
                 if (bv != ini.Get("PadPauseButton")) { ini.Set("PadPauseButton", bv); iniDirty = true; }
                 var pm = pmode.SelectedItem as string ?? "legacy";
                 if (pm != ini.Get("PauseMode")) { ini.Set("PauseMode", pm); iniDirty = true; }
+                int curEager = int.TryParse(ini.Get("ExitScreenEagerMs"), out var ce) ? ce : -1;
+                var eagerVal = eagerEn.Checked ? (int)eagerMs.Value : -1;
+                if (eagerVal != curEager) { ini.Set("ExitScreenEagerMs", eagerVal.ToString()); iniDirty = true; }
             });
         }
 

@@ -18,6 +18,10 @@ internal static class GameScreens
     private static readonly object _lock = new();
     private static InfoOverlay? _overlay;
     private static System.Windows.Forms.Timer? _timer;
+    // "Exit screen early" coordination: _endCoverUp = a "GAME OVER" cover is currently showing;
+    // _endDone = this session's end screen already finished (so a late eager fire is a no-op).
+    private static bool _endCoverUp;
+    private static bool _endDone;
 
     public static void Configure(string lbRoot)
     {
@@ -30,6 +34,7 @@ internal static class GameScreens
     public static void ShowStartup(LaunchedGame? snap, int? coverMsOverride = null)
     {
         if (snap == null) return;
+        lock (_lock) { _endDone = false; _endCoverUp = false; }   // fresh session
         GameplaySettings.Resolved? rr = Safe(() => GameplaySettings.Resolve(snap));
         if (rr is not { UseStartup: true }) return;
         // SmartCapture (coverMsOverride set): the cover stays for the SAFETY-MAX; the coordinator
@@ -64,16 +69,44 @@ internal static class GameScreens
         });
     }
 
+    /// <summary>Show the end ("GAME OVER") COVER early and non-blocking — the LiteBox "exit screen
+    /// early" option. Called from the exit sequence (pause-menu Exit → ExitGameLocked) X ms after the
+    /// exit script, so the shutdown screen already hides the display while the emulator is still
+    /// closing. <see cref="ShowEndBlocking"/> then reuses this same overlay (no flash). No-op when the
+    /// end screen is disabled for this launch, or the session's end already ran (race guard).</summary>
+    public static void ShowEndEager(LaunchedGame? snap)
+    {
+        if (snap == null) return;
+        lock (_lock) { if (_endDone || _endCoverUp) return; }
+        GameplaySettings.Resolved? rr = Safe(() => GameplaySettings.Resolve(snap));
+        if (rr is not { UseStartup: true }) return;        // same master toggle as the end screen
+        if (rr.ShutdownMinMs < 0) return;                  // per-game DisableShutdownScreen
+        var ctx = BuildCtx(snap);
+        bool hide = rr.HideCursor;
+        bool stayTop = snap?.StayOnTop ?? Safe2(GameplaySettings.StartupStayOnTop);
+        UiThread.Invoke(() =>
+        {
+            lock (_lock)
+            {
+                if (_endDone || _endCoverUp) return;
+                CloseLocked();
+                try { _overlay = new InfoOverlay(ctx, "GAME OVER", hide, noActivate: stayTop); _overlay.Show(); _overlay.ForceToFront(8); _endCoverUp = true; }
+                catch { CloseLocked(); }
+            }
+        });
+        Console.WriteLine("[gamescreens] exit screen shown early");
+    }
+
     /// <summary>Show the end ("GAME OVER") screen (if enabled) and BLOCK the caller for
     /// the minimum display time, then close. Call on the launch worker after exit.</summary>
     public static void ShowEndBlocking(LaunchedGame? snap)
     {
-        if (snap == null) return;
+        if (snap == null) { FinishEnd(snap); return; }
         GameplaySettings.Resolved? rr = Safe(() => GameplaySettings.Resolve(snap));
-        if (rr is not { UseStartup: true }) return;       // same master toggle as startup
-        if (rr.ShutdownMinMs < 0) return;                  // per-game DisableShutdownScreen
+        if (rr is not { UseStartup: true }) { FinishEnd(snap); return; }   // same master toggle as startup
+        if (rr.ShutdownMinMs < 0) { FinishEnd(snap); return; }             // per-game DisableShutdownScreen
         int ms = Math.Max(0, rr.ShutdownMinMs);
-        if (ms == 0) return;
+        if (ms == 0) { FinishEnd(snap); return; }
         var ctx = BuildCtx(snap);
         bool hide = rr.HideCursor;
 
@@ -82,8 +115,10 @@ internal static class GameScreens
         {
             lock (_lock)
             {
+                // Reuse the early "exit screen" cover if one is already up (no close+reopen flash).
+                if (_endCoverUp && _overlay != null) return;
                 CloseLocked();
-                try { _overlay = new InfoOverlay(ctx, "GAME OVER", hide, noActivate: stayTop); _overlay.Show(); _overlay.ForceToFront(8); }
+                try { _overlay = new InfoOverlay(ctx, "GAME OVER", hide, noActivate: stayTop); _overlay.Show(); _overlay.ForceToFront(8); _endCoverUp = true; }
                 catch { CloseLocked(); }
             }
         });
@@ -96,7 +131,18 @@ internal static class GameScreens
         // carries its own copy of this flag (Edit Emulator → Startup Screen) → it wins over
         // the global for an emulator launch.
         bool refocus = snap?.EmuForceFocus ?? Safe2(GameplaySettings.ForceFrontendFocusOnShutdown);
+        UiThread.Invoke(() => { lock (_lock) { CloseLocked(); _endCoverUp = false; _endDone = true; } });
+        if (refocus) FocusFrontend();
+    }
+
+    /// <summary>Close any early exit cover and mark the session's end done — used by the paths where
+    /// no end screen is shown (disabled / zero time), so an early cover never orphans on screen.</summary>
+    private static void FinishEnd(LaunchedGame? snap)
+    {
+        bool wasUp; lock (_lock) { wasUp = _endCoverUp; _endCoverUp = false; _endDone = true; }
+        if (!wasUp) return;
         UiThread.Invoke(() => { lock (_lock) CloseLocked(); });
+        bool refocus = snap?.EmuForceFocus ?? Safe2(GameplaySettings.ForceFrontendFocusOnShutdown);
         if (refocus) FocusFrontend();
     }
 
@@ -170,6 +216,7 @@ internal static class GameScreens
 
     private static void CloseLocked()
     {
+        _endCoverUp = false;
         try { _timer?.Stop(); _timer?.Dispose(); } catch { }
         _timer = null;
         try { _overlay?.HideThenClose(); } catch { }   // never yank the foreground off the game

@@ -327,7 +327,25 @@ internal static class PauseManager
         if (AhkScript.IsScriptEmpty(exitScript)) exitScript = DefaultExitScript;
         bool graceful = false;
         try { Thread.Sleep(200); } catch { }   // let the emulator settle into the foreground
-        AhkScript.RunOneOff(exitScript, _lbRoot);
+        var ahk = AhkScript.RunOneOff(exitScript, _lbRoot);
+
+        // LiteBox "exit screen early": cover the display with the end screen X ms AFTER the exit
+        // script runs, instead of waiting for the process to fully exit (which can leave a flash of
+        // the emulator closing / desktop). -1 = off (default). Per-emulator. Runs off-thread so the
+        // exit sequence below (WaitForExit / kill) is unaffected; ShowEndBlocking reuses this cover.
+        string? emuId = null; try { emuId = _emu?.Id; } catch { }
+        int eagerMs = Gameplay.GameplaySettings.ResolveExitScreenEagerMs(emuId);
+        if (eagerMs >= 0)
+        {
+            var snap = LaunchedGame.Current;
+            new Thread(() =>
+            {
+                try { ahk?.WaitForExit(4000); } catch { }   // "after the exit AHK code executes"
+                try { if (eagerMs > 0) Thread.Sleep(eagerMs); } catch { }
+                try { Gameplay.GameScreens.ShowEndEager(snap); } catch { }
+            }) { IsBackground = true, Name = "litebox-exitcover" }.Start();
+        }
+
         try { graceful = _proc!.WaitForExit(5000); } catch { }
         if (graceful) Console.WriteLine("[pause] emulator closed by the exit script");
         else

@@ -167,6 +167,31 @@ internal static class GameplaySettings
         };
     }
 
+    /// <summary>LiteBox-own: on an explicit exit (pause-menu "Exit Game"), show the end/exit screen
+    /// this many ms AFTER the exit AutoHotkey script runs — covering the display while the emulator
+    /// is still closing, instead of waiting for the process to fully exit. -1 = disabled (default).
+    /// Per-emulator override (litebox-options.db) wins over the global (LiteBox.ini).</summary>
+    public static int ResolveExitScreenEagerMs(string? emuId)
+    {
+        try
+        {
+            if (!string.IsNullOrEmpty(emuId))
+            {
+                var ov = Data.LiteBoxOption.GetOverride(Data.LiteBoxOption.ScopeEmulator, emuId!, "ExitScreenEagerMs");
+                if (!string.IsNullOrEmpty(ov)) return int.TryParse(ov, out var n) ? n : -1;
+            }
+            return ExitScreenEagerMsGlobal();
+        }
+        catch { return -1; }
+    }
+
+    /// <summary>Global "exit screen early" delay (LiteBox.ini ExitScreenEagerMs). -1 = disabled.</summary>
+    public static int ExitScreenEagerMsGlobal()
+    {
+        try { var v = LiteBoxConfig.LoadForExe().Get("ExitScreenEagerMs"); return int.TryParse(v, out var n) ? n : -1; }
+        catch { return -1; }
+    }
+
     /// <summary>Controller-pause master switch (LiteBox-own, LiteBox.ini). Off by default —
     /// opt-in. LaunchBox has no equivalent, so this never touches Settings.xml.</summary>
     public static bool PadPauseEnabled()

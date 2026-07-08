@@ -588,7 +588,7 @@ internal static class EditEmulatorWindow
 
         // ── LiteBox-specific frame: pause / screenshot hotkeys + controller pause ──
         var grp = UiKit.LiteBoxFrame.Make("LiteBox-specific (LaunchBox ignores these)",
-            new Point(S(4), S(88)), new Size(S(668), S(212)), s, Bg);
+            new Point(S(4), S(88)), new Size(S(668), S(262)), s, Bg);
         p.Controls.Add(grp);
 
         ComboBox Cbo(int y, int w) => new()
@@ -641,10 +641,32 @@ internal static class EditEmulatorWindow
             : Math.Max(0, Array.IndexOf(Pause.XInputPad.ComboPresets, padBtnOv) + 1);   // +1: index 0 is "Use global"
         grp.Controls.Add(padBtnCbo);
 
+        // Exit screen early (tri-state + a ms box when Custom): show the end/exit screen this many ms
+        // after the exit script, instead of waiting for the process to fully exit.
+        grp.Controls.Add(Lab("Show exit screen early:", 162));
+        var eagerGlobal = Gameplay.GameplaySettings.ExitScreenEagerMsGlobal();
+        var eagerCbo = Cbo(160, 200);
+        eagerCbo.Items.AddRange(new object[] { $"Use global ({(eagerGlobal < 0 ? "Off" : eagerGlobal + " ms")})", "Disabled", "Custom…" });
+        var eagerOv = Data.LiteBoxOption.GetOverride(Data.LiteBoxOption.ScopeEmulator, emuId, "ExitScreenEagerMs");
+        int eagerOvNum = int.TryParse(eagerOv, out var _ev) ? _ev : int.MinValue;
+        eagerCbo.SelectedIndex = string.IsNullOrEmpty(eagerOv) ? 0 : (eagerOvNum >= 0 ? 2 : 1);
+        grp.Controls.Add(eagerCbo);
+        var eagerMs = new NumericUpDown
+        {
+            Location = new Point(S(470), S(160)), Width = S(80), Minimum = 0, Maximum = 10000, Increment = 100,
+            BackColor = Panel2, ForeColor = Fg, BorderStyle = BorderStyle.FixedSingle,
+            Value = eagerOvNum >= 0 ? Math.Min(10000, eagerOvNum) : Math.Max(0, Math.Min(10000, eagerGlobal)),
+            Visible = eagerCbo.SelectedIndex == 2,
+        };
+        grp.Controls.Add(eagerMs);
+        var eagerMsLbl = new Label { Text = "ms", Location = new Point(S(556), S(163)), AutoSize = true, ForeColor = SubFg, BackColor = Bg, Visible = eagerCbo.SelectedIndex == 2 };
+        grp.Controls.Add(eagerMsLbl);
+        eagerCbo.SelectedIndexChanged += (_, _) => { eagerMs.Visible = eagerMsLbl.Visible = eagerCbo.SelectedIndex == 2; };
+
         grp.Controls.Add(new Label
         {
-            Text = "Stored separately from LaunchBox — a real LaunchBox on the same library is unaffected.",
-            Location = new Point(S(12), S(168)), AutoSize = true, ForeColor = SubFg, BackColor = Bg, Font = new Font("Segoe UI", 8.25f),
+            Text = "Exit screen early = show the end screen N ms after the pause-menu exit script, not waiting for the\nprocess to close. Stored separately from LaunchBox — a real LaunchBox on the same library is unaffected.",
+            Location = new Point(S(12), S(196)), AutoSize = true, ForeColor = SubFg, BackColor = Bg, Font = new Font("Segoe UI", 8.25f),
         });
 
         return (p, () =>
@@ -665,6 +687,9 @@ internal static class EditEmulatorWindow
             // hotkeys: value getter yields null (inherit) / Disabled sentinel / custom combo.
             Set(() => Data.LiteBoxOption.SetOverride(Data.LiteBoxOption.ScopeEmulator, emuId, "PauseHotkey", pauseHk.value()));
             Set(() => Data.LiteBoxOption.SetOverride(Data.LiteBoxOption.ScopeEmulator, emuId, "ScreenCaptureKey", capHk.value()));
+            // exit screen early: 0 = inherit (clear), 1 = Disabled (-1), 2 = Custom ms value.
+            Set(() => Data.LiteBoxOption.SetOverride(Data.LiteBoxOption.ScopeEmulator, emuId, "ExitScreenEagerMs",
+                eagerCbo.SelectedIndex switch { 1 => "-1", 2 => ((int)eagerMs.Value).ToString(System.Globalization.CultureInfo.InvariantCulture), _ => null }));
         });
     }
 
