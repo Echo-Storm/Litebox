@@ -288,8 +288,9 @@ internal static class LbGlobalOptions
             scCombPanel.Controls.Add(scAnd); scCombPanel.Controls.Add(scOr);
             p.Controls.Add(scCombPanel);
 
-            p.Controls.Add(Lbl("Reveal anyway after (ms):", new Point(S(12), S(286))));
-            var scMax = Txt(ini.Get("SmartCaptureMaxMs", "30000"), new Point(S(200), S(283)), 70); p.Controls.Add(scMax);
+            // "Reveal anyway after" is now the LB "Startup Load Delay" (Game Startup tab / per-emulator /
+            // per-game), repurposed as the reveal ceiling — not a SmartCapture field. Default 5s when unset.
+            p.Controls.Add(Lbl("Reveal ceiling = LB \"Startup Load Delay\" (Game Startup tab), default 5s.", new Point(S(12), S(286)), Dim));
 
             var scStop = Chk("End the session when the game window closes (instead of process exit)", ini.GetBool("SmartCaptureStopOnWindowClose", false), new Point(S(12), S(310)));
             p.Controls.Add(scStop);
@@ -299,7 +300,7 @@ internal static class LbGlobalOptions
             BindIniChk(scUseSize, "SmartCaptureUseSize", false);
             BindIniTxt(scFps, "SmartCaptureMinFps"); BindIniTxt(scSus, "SmartCaptureSustainMs");
             BindIniTxt(scSz, "SmartCaptureMinSizePct"); BindIniTxt(scTitle, "SmartCaptureTitle");
-            BindIniTxt(scMax, "SmartCaptureMaxMs"); BindIniChk(scStop, "SmartCaptureStopOnWindowClose");
+            BindIniChk(scStop, "SmartCaptureStopOnWindowClose");
             applies.Add(() => { var v = scOr.Checked ? "or" : "and"; if (v != (ini.Get("SmartCaptureCombine") ?? "and")) { ini.Set("SmartCaptureCombine", v); iniDirty = true; } });
 
             void ScSync()

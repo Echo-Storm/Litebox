@@ -50,6 +50,10 @@ internal sealed class LaunchedGame
     public bool StartupOverride;
     public bool StartupUse, StartupHideCursor, ShutdownDisabled;
     public int StartupMinMs = -1;
+    // LB "Startup Load Delay" (ms). Repurposed under LiteBox as the SmartCapture reveal-anyway ceiling
+    // (give up waiting for a render and reveal the cover after this). -1/0 ⇒ unset → default. See
+    // GameplaySettings.RevealMaxMs. Round-trips to LB, where it keeps its native meaning.
+    public int StartupLoadDelay = -1;
 
     // Per-EMULATOR startup/end-screen tier (LB Edit Emulator → Startup Screen). Every
     // emulator in Emulators.xml carries its own copy (seeded from the global defaults at
@@ -58,7 +62,7 @@ internal sealed class LaunchedGame
     // emulator, like the game, isn't available once the screen path runs. -1/null ⇒ unset.
     public bool EmuCaptured;
     public bool EmuUse, EmuHideCursor, EmuShutdownDisabled;
-    public int EmuStartupMinMs = -1, EmuShutdownMinMs = -1;
+    public int EmuStartupMinMs = -1, EmuShutdownMinMs = -1, EmuLoadDelay = -1;
     public bool? EmuForceFocus;
 
     // LiteBox-OWN options resolved (emulator override → global) at capture — LB has no field
@@ -134,9 +138,10 @@ internal sealed class LaunchedGame
                     lg.StartupHideCursor = string.Equals(lf2.GetField("HideMouseCursorInGame"), "true", StringComparison.OrdinalIgnoreCase);
                     lg.ShutdownDisabled = string.Equals(lf2.GetField("DisableShutdownScreen"), "true", StringComparison.OrdinalIgnoreCase);
                     // Display time of the "NOW LOADING…" screen — the Customize slider
-                    // (StartupScreenPostLaunchDisplayTime, ms). NOT StartupLoadDelay,
-                    // which is the separate wait-before-game-is-up knob (unwired yet).
+                    // (StartupScreenPostLaunchDisplayTime, ms).
                     lg.StartupMinMs = int.TryParse(lf2.GetField("StartupScreenPostLaunchDisplayTime"), out var ld) ? ld : -1;
+                    // Startup Load Delay — the SmartCapture reveal-anyway ceiling under LiteBox.
+                    lg.StartupLoadDelay = int.TryParse(lf2.GetField("StartupLoadDelay"), out var lds) ? lds : -1;
                 }
             }
             catch { }
@@ -154,6 +159,7 @@ internal sealed class LaunchedGame
                     lg.EmuShutdownDisabled = EBool(ef, "DisableShutdownScreen", false);
                     lg.EmuStartupMinMs = int.TryParse(ef.GetField("StartupScreenPostLaunchDisplayTime"), out var es) ? es : -1;
                     lg.EmuShutdownMinMs = int.TryParse(ef.GetField("ShutdownScreenPostReadyDisplayTime"), out var eh) ? eh : -1;
+                    lg.EmuLoadDelay = int.TryParse(ef.GetField("StartupLoadDelay"), out var eld) ? eld : -1;
                     var ff = ef.GetField("ForceFrontendFocusOnShutdown");
                     lg.EmuForceFocus = string.IsNullOrEmpty(ff) ? (bool?)null
                                      : string.Equals(ff, "true", StringComparison.OrdinalIgnoreCase);

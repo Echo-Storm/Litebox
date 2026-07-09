@@ -185,7 +185,7 @@ internal sealed partial class EditGameWindow : Form   // Game Saves page lives i
         var cancel = FooterBtn("Cancel", Color.FromArgb(70, 70, 82));
         ok.Location = new Point(S(12), S(9));
         cancel.Location = new Point(S(112), S(9));
-        ok.Click += (_, _) => { SaveCurrent(); SaveCustomFields(); SaveAlternateNames(); SaveControllerSupport(); SaveControllerSupportMulti(); SaveLaunching(); SaveLiteBoxOptions(); DialogResult = DialogResult.OK; Close(); };
+        ok.Click += (_, _) => { SaveCurrent(); SaveCustomFields(); SaveAlternateNames(); SaveControllerSupport(); SaveControllerSupportMulti(); SaveLaunching(); DialogResult = DialogResult.OK; Close(); };
         cancel.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
 
         var hint = new Label
@@ -277,7 +277,6 @@ internal sealed partial class EditGameWindow : Form   // Game Saves page lives i
             N("Emulation", "Emulation"),
             N("Root Folder", "RootFolder"),
             N("Startup/Pause", "StartupPause"),
-            N("LiteBox Options", "LiteBoxOptions"),
         });
 
         _tree.Nodes.AddRange(new[] { metadata, media, launching });
@@ -295,18 +294,9 @@ internal sealed partial class EditGameWindow : Form   // Game Saves page lives i
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
     }
 
-    private Action? _lbxSave;
-    // Per-game LiteBox gameplay overrides (stay-on-top, exit-early, pause/screenshot hotkeys, controller
-    // pause, Smart Capture) — the reusable tri-state editor, scope=game. Same set as the emulator's
-    // "LiteBox" section and the global "LiteBox-Options" tab; resolution is game → emulator → global.
-    private Control BuildLiteBoxOptionsPage()
-    {
-        var (panel, save) = Gameplay.LiteBoxGameplayEditor.Build(
-            Data.LiteBoxOption.ScopeGame, Safe(() => _editGames[0].Id) ?? "", _s, Bg, Fg, SubFg, Field, _readOnly);
-        _lbxSave = save;
-        return panel;
-    }
-    private void SaveLiteBoxOptions() { try { _lbxSave?.Invoke(); } catch { } }
+    // Per-game LiteBox gameplay overrides now live INSIDE the Startup/Pause customize modals (a "LiteBox"
+    // tab in each; startup-related in Startup, pause-related in Pause) — see ShowStartup/PauseCustomizeDialog.
+    // They persist on that modal's OK via LiteBoxGameplayEditor's own save, so there is no separate page here.
 
     private void ShowPage(string key)
     {
@@ -328,7 +318,6 @@ internal sealed partial class EditGameWindow : Form   // Game Saves page lives i
                 "Emulation" => IsMulti ? Placeholder("Emulation") : BuildEmulationPage(),
                 "RootFolder" => IsMulti ? Placeholder("Root Folder") : BuildRootFolderPage(),
                 "StartupPause" => IsMulti ? Placeholder("Startup/Pause") : BuildStartupPausePage(),
-                "LiteBoxOptions" => IsMulti ? Placeholder("LiteBox Options") : BuildLiteBoxOptionsPage(),
                 _ => Placeholder(_tree.SelectedNode?.Text ?? key),
             };
             _pages[key] = page;
@@ -1023,7 +1012,7 @@ internal sealed partial class EditGameWindow : Form   // Game Saves page lives i
         if (IsMulti || _visible.Count == 0) return;
         int ni = _index + delta;
         if (ni < 0 || ni >= _visible.Count) return;
-        SaveCurrent(); SaveCustomFields(); SaveAlternateNames(); SaveControllerSupport(); SaveLaunching(); SaveLiteBoxOptions();
+        SaveCurrent(); SaveCustomFields(); SaveAlternateNames(); SaveControllerSupport(); SaveLaunching();
         _index = ni;
         _editGames = new[] { _visible[_index] };
         LoadMetadata();

@@ -603,7 +603,10 @@ internal sealed partial class EditGameWindow
         custPause.Click += (_, _) => ShowPauseCustomizeDialog();
         p.Controls.Add(custPause);
 
-        // Customize… is only reachable while its Override checkbox is checked (LB behaviour).
+        // Customize… is reachable ONLY while its Override checkbox is checked (LB parity). Everything
+        // behind it — the LB-native fields AND the "LiteBox" tab — applies only when checked: the LB
+        // fields are gated at launch (StartupOverride / PauseOverride), and SaveLaunching clears the
+        // per-game LiteBox overrides for an unchecked concern so they take no effect either.
         void SyncCust()
         {
             custStart.Enabled = !_readOnly && _lchOvrStart.Checked;
@@ -619,7 +622,11 @@ internal sealed partial class EditGameWindow
     /// (written on the page save). Times are STORED in milliseconds, shown in seconds like LB.</summary>
     private void ShowStartupCustomizeDialog()
     {
-        using var f = NewDialog("Override Default Startup Screen Settings", 700, 430);
+        using var f = NewDialog("Override Default Startup Screen Settings", 700, 470);
+        var (tabs, pgMain, pgLbx) = DialogTabs(f, "Startup Screen");
+        var host = new Panel { Dock = DockStyle.Fill, BackColor = Bg, AutoScroll = true };
+        pgMain.Controls.Add(host);
+
         int x = S(16), y = S(14);
         CheckBox Chk(string text, string field, bool invert, int cx, int cy)
         {
@@ -629,7 +636,7 @@ internal sealed partial class EditGameWindow
                 Text = text, AutoSize = true, Location = new Point(cx, cy), ForeColor = Fg, BackColor = Bg,
                 Checked = invert ? !v : v, Enabled = !_readOnly,
             };
-            f.Controls.Add(cb);
+            host.Controls.Add(cb);
             return cb;
         }
         var enStart = Chk("Enable Game Startup Screen", "UseStartupScreen", false, x, y);
@@ -643,16 +650,16 @@ internal sealed partial class EditGameWindow
         {
             int val = int.TryParse(LchGet(field), out var v) ? Math.Max(0, Math.Min(max, v)) : 0;
             var cap = new Label { AutoSize = true, Location = new Point(x, sy), ForeColor = Fg, BackColor = Bg, Text = caption + fmt(val) };
-            f.Controls.Add(cap);
+            host.Controls.Add(cap);
             sy += S(22);
             var bar = new TrackBar
             {
-                Location = new Point(x, sy), Width = S(640), Minimum = 0, Maximum = max, SmallChange = step,
+                Location = new Point(x, sy), Width = S(620), Minimum = 0, Maximum = max, SmallChange = step,
                 LargeChange = step, TickFrequency = max / 20, Value = val, Enabled = !_readOnly,
                 Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, BackColor = Bg,
             };
             bar.ValueChanged += (_, _) => cap.Text = caption + fmt(bar.Value);
-            f.Controls.Add(bar);
+            host.Controls.Add(bar);
             sy += S(48);
             return (bar, cap);
         }
@@ -664,37 +671,35 @@ internal sealed partial class EditGameWindow
         y += S(24);
         var help1 = new Label
         {
-            Location = new Point(x, y), Size = new Size(S(640), S(48)), ForeColor = SubFg, BackColor = Bg,
+            Location = new Point(x, y), Size = new Size(S(620), S(48)), ForeColor = SubFg, BackColor = Bg,
             Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
             Text = "This option may make for a cleaner startup sequence for some emulators that use exclusive fullscreen "
                  + "mode. If you're seeing a black screen and the game never shows up after loading, you'll need to uncheck "
                  + "this box. If you're setting up a new or unknown emulator, it's worth trying to check this box to see if "
                  + "it makes the startup experience smoother without causing issues.",
         };
-        f.Controls.Add(help1);
+        host.Controls.Add(help1);
         y += S(56);
 
         var (delayBar, _) = Slider("Startup Load Delay: ", "StartupLoadDelay",
             60000, 250, ms => $"{ms / 1000.0:0.000} second(s)", ref y);
         var help2 = new Label
         {
-            Location = new Point(x, y), Size = new Size(S(640), S(34)), ForeColor = SubFg, BackColor = Bg,
+            Location = new Point(x, y), Size = new Size(S(620), S(34)), ForeColor = SubFg, BackColor = Bg,
             Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
             Text = "The startup load delay generally defines how long the emulator takes to load before the game is playing. "
-                 + "This is ultimately how long LaunchBox will wait after launching the emulator's EXE file before showing the game, if possible.",
+                 + "This is ultimately how long LaunchBox will wait after launching the emulator's EXE file before showing the game, if possible. "
+                 + "Under LiteBox it also serves as SmartCapture's \"reveal anyway\" ceiling — the cover lifts by this time even if no render is detected (0 = default 5s).",
         };
-        f.Controls.Add(help2);
+        host.Controls.Add(help2);
 
-        var bottom = new Panel { Dock = DockStyle.Bottom, Height = S(46), BackColor = Bg };
-        var ok = DlgBtn("✔ OK", Color.FromArgb(50, 110, 65));
-        var cancel = DlgBtn("✘ Cancel", Color.FromArgb(70, 70, 82));
-        ok.Enabled = !_readOnly;
-        cancel.DialogResult = DialogResult.Cancel;
-        ok.Location = new Point(S(16), S(8));
-        cancel.Location = new Point(S(100), S(8));
-        bottom.Controls.AddRange(new Control[] { ok, cancel });
-        f.Controls.Add(bottom);
-        f.AcceptButton = ok; f.CancelButton = cancel;
+        // LiteBox tab — the startup-related LiteBox-only overrides (stay-on-top, exit-early, Smart Capture).
+        var (lbxPanel, lbxSave) = Gameplay.LiteBoxGameplayEditor.Build(Data.LiteBoxOption.ScopeGame,
+            Safe(() => _editGames[0].Id) ?? "", _s, Bg, Fg, SubFg, Field, _readOnly, Gameplay.GameplaySection.Startup);
+        lbxPanel.Dock = DockStyle.Fill;
+        pgLbx.Controls.Add(lbxPanel);
+
+        var bottom = DialogButtons(f, out var ok, out var cancel);
         ok.Click += (_, _) =>
         {
             _lchPending["UseStartupScreen"] = LchB(enStart.Checked);
@@ -704,42 +709,24 @@ internal sealed partial class EditGameWindow
             _lchPending["HideAllNonExclusiveFullscreenWindows"] = LchB(hideAll.Checked);
             _lchPending["StartupScreenPostLaunchDisplayTime"] = postBar.Value.ToString(CultureInfo.InvariantCulture);
             _lchPending["StartupLoadDelay"] = delayBar.Value.ToString(CultureInfo.InvariantCulture);
+            if (!_readOnly) { try { lbxSave(); } catch { } }
             f.DialogResult = DialogResult.OK; f.Close();
         };
         cancel.Click += (_, _) => { f.DialogResult = DialogResult.Cancel; f.Close(); };
         f.ShowDialog(this);
     }
 
-    /// <summary>LB's "Override Default Pause Screen Settings" dialog — three switches + the six
-    /// per-game AutoHotkey scripts, tabbed like LB.</summary>
-    private void ShowPauseCustomizeDialog()
+    // ── Shared helpers for the two Customize dialogs (outer dark tab strip + OK/Cancel footer) ──
+
+    /// <summary>Adds a dark owner-drawn outer TabControl to the dialog with a first "<paramref
+    /// name="mainTitle"/>" tab and a "LiteBox" tab; returns both pages. Fill-docked (add BEFORE the
+    /// footer so the footer claims the bottom).</summary>
+    private (TabControl tabs, TabPage main, TabPage lbx) DialogTabs(Form f, string mainTitle)
     {
-        using var f = NewDialog("Override Default Pause Screen Settings", 700, 470);
-        int x = S(16), y = S(14);
-        CheckBox Chk(string text, string field, int cx, int cy)
-        {
-            var cb = new CheckBox
-            {
-                Text = text, AutoSize = true, Location = new Point(cx, cy), ForeColor = Fg, BackColor = Bg,
-                Checked = LchBool(LchGet(field)), Enabled = !_readOnly,
-            };
-            f.Controls.Add(cb);
-            return cb;
-        }
-        var enPause = Chk("Enable Game Pause Screen", "UsePauseScreen", x, y);
-        var suspend = Chk("Suspend Emulator Process While Paused", "SuspendProcessOnPause", S(360), y);
-        y += S(26);
-        var forceful = Chk("Forceful Pause Screen Activation (enable this if the pause screen is not showing)", "ForcefulPauseScreenActivation", x, y);
-        y += S(30);
-
-        f.Controls.Add(new Label { Text = "AutoHotkey Scripts:", AutoSize = true, Location = new Point(x, y), ForeColor = Fg, BackColor = Bg });
-        y += S(22);
-
         var tabs = new TabControl
         {
-            Location = new Point(x, y), Size = new Size(S(650), S(250)),
-            Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
-            DrawMode = TabDrawMode.OwnerDrawFixed, SizeMode = TabSizeMode.Fixed, ItemSize = new Size(S(92), S(24)),
+            Dock = DockStyle.Fill, DrawMode = TabDrawMode.OwnerDrawFixed, SizeMode = TabSizeMode.Fixed,
+            ItemSize = new Size(S(120), S(24)),
         };
         tabs.DrawItem += (_, e) =>
         {
@@ -749,11 +736,85 @@ internal sealed partial class EditGameWindow
             TextRenderer.DrawText(e.Graphics, tabs.TabPages[e.Index].Text, f.Font, e.Bounds,
                 sel ? Color.White : SubFg, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
         };
+        var main = new TabPage(mainTitle) { BackColor = Bg, UseVisualStyleBackColor = false };
+        var lbx = new TabPage("LiteBox") { BackColor = Bg, UseVisualStyleBackColor = false };
+        tabs.TabPages.Add(main); tabs.TabPages.Add(lbx);
+        f.Controls.Add(tabs);   // Fill added first; the Bottom footer (added later) claims its strip
+        return (tabs, main, lbx);
+    }
+
+    private Panel DialogButtons(Form f, out Button ok, out Button cancel)
+    {
+        var bottom = new Panel { Dock = DockStyle.Bottom, Height = S(46), BackColor = Bg };
+        ok = DlgBtn("✔ OK", Color.FromArgb(50, 110, 65));
+        cancel = DlgBtn("✘ Cancel", Color.FromArgb(70, 70, 82));
+        ok.Enabled = !_readOnly;
+        cancel.DialogResult = DialogResult.Cancel;
+        ok.Location = new Point(S(16), S(8));
+        cancel.Location = new Point(S(100), S(8));
+        bottom.Controls.AddRange(new Control[] { ok, cancel });
+        f.Controls.Add(bottom);
+        f.AcceptButton = ok; f.CancelButton = cancel;
+        return bottom;
+    }
+
+    /// <summary>LB's "Override Default Pause Screen Settings" dialog — three switches + the six
+    /// per-game AutoHotkey scripts, tabbed like LB.</summary>
+    private void ShowPauseCustomizeDialog()
+    {
+        using var f = NewDialog("Override Default Pause Screen Settings", 700, 500);
+        var (tabs, pgMain, pgLbx) = DialogTabs(f, "Pause Screen");
+        var host = new Panel { Dock = DockStyle.Fill, BackColor = Bg, AutoScroll = true };
+        pgMain.Controls.Add(host);
+
+        int x = S(16), y = S(14);
+        CheckBox Chk(string text, string field, int cx, int cy)
+        {
+            var cb = new CheckBox
+            {
+                Text = text, AutoSize = true, Location = new Point(cx, cy), ForeColor = Fg, BackColor = Bg,
+                Checked = LchBool(LchGet(field)), Enabled = !_readOnly,
+            };
+            host.Controls.Add(cb);
+            return cb;
+        }
+        var enPause = Chk("Enable Game Pause Screen", "UsePauseScreen", x, y);
+        var suspend = Chk("Suspend Emulator Process While Paused", "SuspendProcessOnPause", S(360), y);
+        y += S(26);
+        var forceful = Chk("Forceful Pause Screen Activation (enable this if the pause screen is not showing)", "ForcefulPauseScreenActivation", x, y);
+        y += S(28);
+
+        host.Controls.Add(new Label { Text = "AutoHotkey Scripts:", AutoSize = true, Location = new Point(x, y), ForeColor = Fg, BackColor = Bg });
+        y += S(20);
+        // Explicit rule for the per-script override (matches PauseManager.ScriptStr).
+        host.Controls.Add(new Label
+        {
+            Location = new Point(x, y), Size = new Size(S(650), S(32)), ForeColor = SubFg, BackColor = Bg,
+            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+            Text = "A non-empty script REPLACES the emulator's default for that action. Leave a tab blank to inherit "
+                 + "the default; put a single comment line ( ;  … ) to override with nothing = disable it entirely.",
+        });
+        y += S(36);
+
         var scriptTabs = new (string title, string field)[]
         {
             ("On Pause", "PauseAutoHotkeyScript"), ("On Resume", "ResumeAutoHotkeyScript"),
             ("Reset Game", "ResetAutoHotkeyScript"), ("Save State", "SaveStateAutoHotkeyScript"),
             ("Load State", "LoadStateAutoHotkeyScript"), ("Swap Discs", "SwapDiscsAutoHotkeyScript"),
+        };
+        var stabs = new TabControl
+        {
+            Location = new Point(x, y), Size = new Size(S(650), S(226)),
+            Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
+            DrawMode = TabDrawMode.OwnerDrawFixed, SizeMode = TabSizeMode.Fixed, ItemSize = new Size(S(92), S(24)),
+        };
+        stabs.DrawItem += (_, e) =>
+        {
+            bool sel = e.Index == stabs.SelectedIndex;
+            using var b = new SolidBrush(sel ? Field : PanelC);
+            e.Graphics.FillRectangle(b, e.Bounds);
+            TextRenderer.DrawText(e.Graphics, stabs.TabPages[e.Index].Text, f.Font, e.Bounds,
+                sel ? Color.White : SubFg, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
         };
         var editors = new Dictionary<string, TextBox>(StringComparer.Ordinal);
         foreach (var (title, field) in scriptTabs)
@@ -767,21 +828,18 @@ internal sealed partial class EditGameWindow
                 Text = LchGet(field).Replace("\r\n", "\n").Replace("\n", "\r\n"),
             };
             page.Controls.Add(tb);
-            tabs.TabPages.Add(page);
+            stabs.TabPages.Add(page);
             editors[field] = tb;
         }
-        f.Controls.Add(tabs);
+        host.Controls.Add(stabs);
 
-        var bottom = new Panel { Dock = DockStyle.Bottom, Height = S(46), BackColor = Bg };
-        var ok = DlgBtn("✔ OK", Color.FromArgb(50, 110, 65));
-        var cancel = DlgBtn("✘ Cancel", Color.FromArgb(70, 70, 82));
-        ok.Enabled = !_readOnly;
-        cancel.DialogResult = DialogResult.Cancel;
-        ok.Location = new Point(S(16), S(8));
-        cancel.Location = new Point(S(100), S(8));
-        bottom.Controls.AddRange(new Control[] { ok, cancel });
-        f.Controls.Add(bottom);
-        f.AcceptButton = ok; f.CancelButton = cancel;
+        // LiteBox tab — the pause-related LiteBox-only overrides (pause / screenshot hotkeys, controller pause).
+        var (lbxPanel, lbxSave) = Gameplay.LiteBoxGameplayEditor.Build(Data.LiteBoxOption.ScopeGame,
+            Safe(() => _editGames[0].Id) ?? "", _s, Bg, Fg, SubFg, Field, _readOnly, Gameplay.GameplaySection.Pause);
+        lbxPanel.Dock = DockStyle.Fill;
+        pgLbx.Controls.Add(lbxPanel);
+
+        var bottom = DialogButtons(f, out var ok, out var cancel);
         ok.Click += (_, _) =>
         {
             _lchPending["UsePauseScreen"] = LchB(enPause.Checked);
@@ -789,6 +847,7 @@ internal sealed partial class EditGameWindow
             _lchPending["ForcefulPauseScreenActivation"] = LchB(forceful.Checked);
             foreach (var (_, field) in scriptTabs)
                 _lchPending[field] = editors[field].Text.Replace("\r\n", "\n");
+            if (!_readOnly) { try { lbxSave(); } catch { } }
             f.DialogResult = DialogResult.OK; f.Close();
         };
         cancel.Click += (_, _) => { f.DialogResult = DialogResult.Cancel; f.Close(); };
@@ -874,6 +933,24 @@ internal sealed partial class EditGameWindow
         if (_lchRoot != null) _lchPending["RootFolder"] = _lchRoot.Text.Trim();
         if (_lchOvrStart != null) _lchPending["OverrideDefaultStartupScreenSettings"] = LchB(_lchOvrStart.Checked);
         if (_lchOvrPause != null) _lchPending["OverrideDefaultPauseScreenSettings"] = LchB(_lchOvrPause.Checked);
+
+        // The per-game LiteBox-only options live behind these same override checkboxes (Customize →
+        // "LiteBox" tab). When a concern is NOT overridden, they must take no effect — clear the
+        // game-scope overrides so resolution falls back to emulator/global. (The LB-native fields are
+        // already gated at launch by StartupOverride / PauseOverride.) Only when the page was built.
+        string gid = Safe(() => _editGames[0].Id) ?? "";
+        if (!string.IsNullOrEmpty(gid))
+        {
+            void ClearGame(string k) { try { Data.LiteBoxOption.SetOverride(Data.LiteBoxOption.ScopeGame, gid, k, null); } catch { } }
+            if (_lchOvrStart is { Checked: false })
+            {
+                ClearGame("StartupStayOnTop"); ClearGame("ExitScreenEagerMs");
+                foreach (var k in Gameplay.SmartCaptureConfig.Keys) ClearGame(k);
+            }
+            if (_lchOvrPause is { Checked: false })
+                foreach (var k in new[] { "PauseHotkey", "ScreenCaptureKey", "PadPauseEnabled", "PadPauseButton" })
+                    ClearGame(k);
+        }
 
         // The emulator assignment + the dual-meaning CommandLine (see the header).
         if (_lchUseEmu != null)

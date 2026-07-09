@@ -47,18 +47,23 @@ internal static class EditEmulatorWindow
         var deps = BuildDependencies(emu, lbRoot, s);
         if (deps != null) w.AddSection("Dependency Files", deps);
 
-        // Startup Screen / Pause Screen keep the LB-native (Emulators.xml) settings only; the LiteBox-only
-        // options (stay-on-top, Smart Capture, exit-early, pause/screenshot hotkeys, controller pause)
-        // live in their own "LiteBox" section, mirroring the general Options window's "LiteBox-Options" tab.
+        // Startup Screen / Pause Screen each hold the LB-native (Emulators.xml) settings on their first
+        // tab plus a "LiteBox" tab folding in the matching LiteBox-only options (startup: stay-on-top,
+        // exit-early, Smart Capture; pause: pause/screenshot hotkeys, controller pause) — same split as
+        // the per-game Customize dialogs. No override checkbox here: the emulator IS the default tier
+        // (resolution game → emulator → global). LiteBox saves are no-ops when read-only.
+        string emuId = Safe(() => emu.Id) ?? "";
         var (startup, applyStartup) = BuildStartup(emu, readOnly, s);
-        w.AddSection("Startup Screen", startup, applyStartup);
+        var (lbxStart, lbxStartSave) = Gameplay.LiteBoxGameplayEditor.Build(
+            Data.LiteBoxOption.ScopeEmulator, emuId, s, Bg, Fg, SubFg, Panel2, readOnly, Gameplay.GameplaySection.Startup);
+        w.AddSection("Startup Screen", TabWrap("Startup Screen", startup, lbxStart, s),
+            () => { applyStartup(); lbxStartSave(); });
 
         var (pause, applyPause) = BuildPause(emu, readOnly, s);
-        w.AddSection("Pause Screen", pause, applyPause);
-
-        var (lbx, lbxSave) = Gameplay.LiteBoxGameplayEditor.Build(
-            Data.LiteBoxOption.ScopeEmulator, Safe(() => emu.Id) ?? "", s, Bg, Fg, SubFg, Panel2, readOnly);
-        w.AddSection("LiteBox", lbx, readOnly ? null : lbxSave);
+        var (lbxPause, lbxPauseSave) = Gameplay.LiteBoxGameplayEditor.Build(
+            Data.LiteBoxOption.ScopeEmulator, emuId, s, Bg, Fg, SubFg, Panel2, readOnly, Gameplay.GameplaySection.Pause);
+        w.AddSection("Pause Screen", TabWrap("Pause Screen", pause, lbxPause, s),
+            () => { applyPause(); lbxPauseSave(); });
 
         AddScript(w, emu, "Pause Script", e => e.PauseAutoHotkeyScript, (e, v) => e.PauseAutoHotkeyScript = v);
         AddScript(w, emu, "Resume Script", e => e.ResumeAutoHotkeyScript, (e, v) => e.ResumeAutoHotkeyScript = v);
@@ -71,6 +76,32 @@ internal static class EditEmulatorWindow
 
         if (readOnly) DisableAllInputs(w);
         w.ShowDialog(owner);
+    }
+
+    /// <summary>Wraps a native section panel and its LiteBox panel into a dark two-tab control
+    /// ("<paramref name="mainTitle"/>" + "LiteBox"), both docked to fill.</summary>
+    private static TabControl TabWrap(string mainTitle, Control main, Control lbx, float s)
+    {
+        int S(int px) => (int)Math.Round(px * s);
+        var tabs = new TabControl
+        {
+            Dock = DockStyle.Fill, DrawMode = TabDrawMode.OwnerDrawFixed, SizeMode = TabSizeMode.Fixed,
+            ItemSize = new Size(S(120), S(24)),
+        };
+        tabs.DrawItem += (_, e) =>
+        {
+            bool sel = e.Index == tabs.SelectedIndex;
+            using var b = new SolidBrush(sel ? Panel2 : Bg);
+            e.Graphics.FillRectangle(b, e.Bounds);
+            TextRenderer.DrawText(e.Graphics, tabs.TabPages[e.Index].Text, tabs.Font, e.Bounds,
+                sel ? Fg : SubFg, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+        };
+        var p1 = new TabPage(mainTitle) { BackColor = Bg, UseVisualStyleBackColor = false };
+        var p2 = new TabPage("LiteBox") { BackColor = Bg, UseVisualStyleBackColor = false };
+        main.Dock = DockStyle.Fill; p1.Controls.Add(main);
+        lbx.Dock = DockStyle.Fill; p2.Controls.Add(lbx);
+        tabs.TabPages.Add(p1); tabs.TabPages.Add(p2);
+        return tabs;
     }
 
     // ── Details ────────────────────────────────────────────────────────
@@ -531,8 +562,8 @@ internal static class EditEmulatorWindow
             Location = new Point(S(8), y2 + S(36)), AutoSize = true, ForeColor = SubFg, BackColor = Bg, Font = new Font("Segoe UI", 8.25f),
         };
         p.Controls.Add(dlyLbl); p.Controls.Add(dly); p.Controls.Add(note);
-        // (LiteBox-only startup extras — stay-on-top / Smart Capture / exit-early — now live in the
-        //  dedicated "LiteBox" section, built by LiteBoxGameplayEditor; see Open().)
+        // (LiteBox-only startup extras — stay-on-top / Smart Capture / exit-early — live on this
+        //  section's "LiteBox" tab, built by LiteBoxGameplayEditor(Startup) and wrapped in Open().)
 
         return (p, () =>
         {
@@ -548,10 +579,8 @@ internal static class EditEmulatorWindow
         });
     }
 
-    // ── Pause Screen (native off-SDK toggles + a blue "LiteBox-specific" frame folding in the
-    // LiteBox-only pause options — pause & screenshot hotkeys and controller pause — that used to
-    // live on the separate "LiteBox" tab). Each LiteBox option is tri-state: "Use global (<value>)"
-    // (default, no DB row) / explicit override, stored scope=emulator so a real LaunchBox never sees it.
+    // ── Pause Screen (LB-native off-SDK toggles only; the LiteBox-only pause options — pause &
+    // screenshot hotkeys, controller pause — live on this section's "LiteBox" tab, wrapped in Open()). ──
     private static (Control, Action) BuildPause(IEmulator emu, bool readOnly, float s)
     {
         int S(int px) => (int)Math.Round(px * s);
@@ -563,8 +592,8 @@ internal static class EditEmulatorWindow
         var susp = Chk(p, new Point(S(8), S(30)), "Suspend Emulator Process While Paused", GetB("SuspendProcessOnPause", true));
         var force = Chk(p, new Point(S(8), S(54)), "Forceful Pause Screen Activation (enable this if the pause screen is not showing)", GetB("ForcefulPauseScreenActivation", true));
 
-        // (LiteBox-only pause extras — pause/screenshot hotkeys, controller pause — now live in the
-        //  dedicated "LiteBox" section, built by LiteBoxGameplayEditor; see Open().)
+        // (LiteBox-only pause extras — pause/screenshot hotkeys, controller pause — live on this
+        //  section's "LiteBox" tab, built by LiteBoxGameplayEditor(Pause) and wrapped in Open().)
 
         return (p, () =>
         {

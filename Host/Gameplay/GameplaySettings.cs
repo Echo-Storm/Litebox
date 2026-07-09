@@ -33,6 +33,7 @@ internal static class GameplaySettings
         public bool UsePause;
         public bool Fading;
         public bool Muting;
+        public int LoadDelayMs;   // resolved LB "Startup Load Delay" (0 = unset) → SmartCapture reveal ceiling
     }
 
     /// <summary>Effective settings for <paramref name="snap"/> (the launching game), global
@@ -63,6 +64,7 @@ internal static class GameplaySettings
             r.UseStartup = snap.EmuUse;
             r.HideCursor = snap.EmuHideCursor;
             if (snap.EmuStartupMinMs >= 0) r.StartupMinMs = snap.EmuStartupMinMs;
+            if (snap.EmuLoadDelay > 0) r.LoadDelayMs = snap.EmuLoadDelay;
             r.ShutdownMinMs = snap.EmuShutdownDisabled ? -1
                             : (snap.EmuShutdownMinMs >= 0 ? snap.EmuShutdownMinMs : r.ShutdownMinMs);
         }
@@ -72,10 +74,20 @@ internal static class GameplaySettings
         {
             r.UseStartup = snap.StartupUse;
             if (snap.StartupMinMs >= 0) r.StartupMinMs = snap.StartupMinMs;
+            if (snap.StartupLoadDelay > 0) r.LoadDelayMs = snap.StartupLoadDelay;
             r.HideCursor = snap.StartupHideCursor;
             if (snap.ShutdownDisabled) r.ShutdownMinMs = -1;   // -1 ⇒ no end screen for this game
         }
         return r;
+    }
+
+    /// <summary>The SmartCapture "reveal anyway" ceiling (ms): how long to wait for a render before
+    /// revealing the cover regardless. Sourced from the resolved LB "Startup Load Delay" (per-emulator /
+    /// per-game), defaulting to 5s when unset (0 would reveal instantly and defeat detection).</summary>
+    public static int RevealMaxMs(LaunchedGame? snap)
+    {
+        int d = 0; try { d = Resolve(snap).LoadDelayMs; } catch { }
+        return d > 0 ? d : 5000;
     }
 
     /// <summary>Pause hotkey string (LiteBox.ini, combo-capable). When the user never set one in
@@ -167,7 +179,6 @@ internal static class GameplaySettings
             SustainMs         = I("SmartCaptureSustainMs", 600),
             MinSizePct        = I("SmartCaptureMinSizePct", 50),
             Title             = R("SmartCaptureTitle", ""),
-            MaxWaitMs         = I("SmartCaptureMaxMs", 30000),
             ShowBorder        = B("SmartCaptureShowBorder", false),   // hidden ini opt-in: keep the yellow WGC border
             StopOnWindowClose = B("SmartCaptureStopOnWindowClose", false),
             IgnoreExes        = SmartCaptureIgnoredExes(),   // global blacklist (store clients by default)

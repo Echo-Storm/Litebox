@@ -1,7 +1,8 @@
 // SmartCapture: reveal the startup cover WHEN THE GAME IS ACTUALLY READY, not on a blind timer.
-// Watches the launched process TREE and lifts the cover the moment a chosen detection condition
-// is met, floored by StartupLoadDelay and backed by a safety-max (so a case WGC can't see —
-// exclusive fullscreen — never hangs; it falls back to a timed reveal).
+// Watches the launched process TREE (or all windows for store launches) and lifts the cover the
+// moment a chosen detection condition is met, backed by a safety-max "reveal anyway after" ceiling
+// (so a case WGC can't see — exclusive fullscreen — never hangs; it falls back to a timed reveal).
+// That ceiling is the resolved LB "Startup Load Delay" (GameplaySettings.RevealMaxMs), default 5s.
 //
 // Detection is a BOOLEAN EXPRESSION (configurable — global / per-emulator / per-game):
 //     detected(window) = titleMatch(if a title is set)  OR  ( fps-test  [AND|OR]  size-test )
@@ -38,7 +39,8 @@ internal sealed class SmartCaptureConfig
     public int SustainMs = 600;
     public int MinSizePct = 50;
     public string Title = "";          // wildcard, "" = no title term
-    public int MaxWaitMs = 30000;      // safety-max: reveal the cover anyway after this (render never detected)
+    // The safety-max ("reveal anyway after") is NOT a SmartCapture key — it's the resolved LB "Startup
+    // Load Delay" (per-emulator/game), computed by GameplaySettings.RevealMaxMs and passed to Start().
     public bool ShowBorder;            // keep the yellow WGC capture border (hidden ini opt-in; default off)
     public bool StopOnWindowClose;     // end the session when the game WINDOW closes (else process exit)
     public HashSet<string>? IgnoreExes; // exe filenames to skip (store clients) — resolved from the global blacklist
@@ -53,7 +55,7 @@ internal sealed class SmartCaptureConfig
     {
         "SmartCaptureEnabled", "SmartCaptureUseFps", "SmartCaptureUseSize", "SmartCaptureCombine",
         "SmartCaptureMinFps", "SmartCaptureSustainMs", "SmartCaptureMinSizePct", "SmartCaptureTitle",
-        "SmartCaptureMaxMs", "SmartCaptureStopOnWindowClose",
+        "SmartCaptureStopOnWindowClose",
     };
 }
 

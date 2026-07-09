@@ -300,14 +300,16 @@ internal static class PauseManager
         AhkScript.RunOneOff(script, _lbRoot);
     }
 
-    /// <summary>The AHK script for a pause action: the GAME's when its pause override is
-    /// active (LB Edit Game → Customize replaces the emulator's scripts wholesale — an
-    /// empty tab means "no script for that action"), else the EMULATOR's field. The
-    /// per-game set never includes ExitAutoHotkeyScript (emulator-only, like LB).</summary>
+    /// <summary>The AHK script for a pause action, resolved PER-SCRIPT: when the game's pause override
+    /// is active, a NON-BLANK game script replaces the emulator's default; a BLANK one inherits the
+    /// emulator's. A lone comment line (";…") is non-blank ⇒ it replaces AND, being a no-op to
+    /// <see cref="AhkScript.IsScriptEmpty"/>, disables the default entirely. Off / no override ⇒ the
+    /// emulator's field. The per-game set never includes ExitAutoHotkeyScript (emulator-only, like LB).</summary>
     private static string ScriptStr(string field)
     {
         var snap = LaunchedGame.Current;
-        if (snap is { PauseOverride: true } && snap.PauseScripts.TryGetValue(field, out var s)) return s ?? "";
+        if (snap is { PauseOverride: true } && snap.PauseScripts.TryGetValue(field, out var s) && !string.IsNullOrWhiteSpace(s))
+            return s;
         return FieldStr(_emu!, field);
     }
 

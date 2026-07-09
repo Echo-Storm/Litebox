@@ -68,16 +68,16 @@ internal static class SmartCaptureEditor
         bool isOr = comb.Equals("or", StringComparison.OrdinalIgnoreCase);
         var rAnd = Rad("AND", 230, 240, !isOr); var rOr = Rad("OR", 300, 240, isOr);
         p.Controls.Add(rAnd); p.Controls.Add(rOr);
+        // "Reveal anyway after" is no longer a SmartCapture field — it is the LB "Startup Load Delay"
+        // (Startup Screen tab), repurposed as the reveal ceiling. So it's edited there, not here.
+        p.Controls.Add(Lab("Reveal ceiling = LB \"Startup Load Delay\" (Startup Screen tab).", 272, subFg));
 
-        p.Controls.Add(Lab("Reveal anyway after (ms):", 272));
-        var maxw = Txt(Cur("SmartCaptureMaxMs", g.MaxWaitMs.ToString()), 200, 269, 70); p.Controls.Add(maxw);
-
-        var stopWin = Chk("End session when the game window closes", CurB("SmartCaptureStopOnWindowClose", g.StopOnWindowClose), 300);
+        var stopWin = Chk("End session when the game window closes", CurB("SmartCaptureStopOnWindowClose", g.StopOnWindowClose), 296);
         p.Controls.Add(stopWin);
 
         // Enable cascade: the whole block follows the override checkbox; each test's params follow their
         // own checkbox; the AND/OR pair is live only when BOTH tests are on.
-        var block = new Control[] { en, title, useFps, fps, sus, useSize, sz, maxw, stopWin, rAnd, rOr, lblComb };
+        var block = new Control[] { en, title, useFps, fps, sus, useSize, sz, stopWin, rAnd, rOr, lblComb };
         void Sync()
         {
             bool on = !readOnly && ovr.Checked;
@@ -110,7 +110,6 @@ internal static class SmartCaptureEditor
             LiteBoxOption.SetOverride(scope, entityId, "SmartCaptureSustainMs", sus.Text.Trim());
             LiteBoxOption.SetOverride(scope, entityId, "SmartCaptureMinSizePct", sz.Text.Trim());
             LiteBoxOption.SetOverride(scope, entityId, "SmartCaptureTitle", title.Text.Trim());
-            LiteBoxOption.SetOverride(scope, entityId, "SmartCaptureMaxMs", maxw.Text.Trim());
             LiteBoxOption.SetOverride(scope, entityId, "SmartCaptureStopOnWindowClose", stopWin.Checked ? "true" : "false");
         }
 

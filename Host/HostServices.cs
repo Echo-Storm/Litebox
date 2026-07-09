@@ -217,10 +217,9 @@ internal static class HostLaunch
             scCfg.GlobalScan = true;
             scCfg.Baseline = Diag.WinScan.BaselineHwnds();
             int scDisplay = SafeNullableInt(() => Gameplay.GameplaySettings.Resolve(LaunchedGame.Current)?.StartupMinMs) ?? 2000;
-            // Fallback safety-max: reveal the cover anyway if a render is never detected. Configurable
-            // (LiteBox-Options → Smart Capture), floored at the display time. Store games load slower
-            // (client hand-off + install-dir process + render) so the default (30s) leaves room.
-            int scMax = Math.Max(scDisplay, scCfg.MaxWaitMs);
+            // Fallback safety-max ("reveal anyway after"): reveal the cover if a render is never detected.
+            // Sourced from the LB "Startup Load Delay" (per-emulator/game), default 5s, floored at display.
+            int scMax = Math.Max(scDisplay, Gameplay.GameplaySettings.RevealMaxMs(LaunchedGame.Current));
             int scBackstop = scMax + scDisplay + 5000;
 
             if (!StoreSupport.ShellOpen(target)) { Console.WriteLine("[store-launch] ShellOpen failed: " + target); StoreTrace.Log("store-launch ShellOpen FAILED"); return; }
@@ -352,7 +351,7 @@ internal static class HostLaunch
                     // — the detection window is subtracted inside). Safety max = fallback if the game
                     // is never detected (exclusive fullscreen).
                     int scDisplay = SafeNullableInt(() => Gameplay.GameplaySettings.Resolve(LaunchedGame.Current)?.StartupMinMs) ?? 2000;
-                    int scMax = Math.Max(scDisplay, scCfg.MaxWaitMs);   // fallback safety-max, configurable (LiteBox-Options → Smart Capture)
+                    int scMax = Math.Max(scDisplay, Gameplay.GameplaySettings.RevealMaxMs(LaunchedGame.Current));   // "reveal anyway after" = LB Startup Load Delay (default 5s)
                     int scBackstop = scMax + scDisplay + 5000;   // the coordinator owns the reveal; this is a last-resort cover timer
                     Action<Process> onSpawned = p =>
                     {
