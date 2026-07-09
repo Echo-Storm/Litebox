@@ -38,7 +38,10 @@ internal static class LbGlobalOptions
 {
     /// <summary>Appends the LaunchBox-settings sections to an options window.
     /// <paramref name="readOnly"/> greys them out entirely.</summary>
-    public static void AddSections(OptionsWindow w, LbSettingsStore s, bool readOnly, RaScanHook? raScan = null)
+    // cfg: the SHARED LiteBox.ini instance the caller (MainWindow) also saves in OptionsWindow.ApplyFinished
+    // — the Gameplay panel MUST write into this one, else ApplyFinished's cfg.Save() (run AFTER the panel's
+    // own save) would clobber the panel's changes with a stale instance. Null → load a private one (legacy).
+    public static void AddSections(OptionsWindow w, LbSettingsStore s, bool readOnly, RaScanHook? raScan = null, LiteBoxConfig? cfg = null)
     {
         if (!s.Loaded) return;   // no Settings.xml → nothing to edit
         // Computed once and threaded into every Build*Panel below - each panel's own local
@@ -126,7 +129,7 @@ internal static class LbGlobalOptions
 
         // LB "Gameplay" branch (Game Startup / Game Pause / Screen Capture), tabbed.
         // These DO drive LiteBox (startup/end/pause overlays + screenshot hotkey).
-        w.AddSection("LB · Gameplay", BuildGameplayPanel(s, readOnly, dpiS, out var applyGameplay),
+        w.AddSection("LB · Gameplay", BuildGameplayPanel(s, readOnly, dpiS, cfg, out var applyGameplay),
             readOnly ? null : applyGameplay);
     }
 
@@ -135,7 +138,7 @@ internal static class LbGlobalOptions
     //    Settings.xml (LB-owned field names); the two HOTKEYS live in LiteBox.ini
     //    (combo-capable, unlike LB's single WPF-Key int). Theme pickers are omitted
     //    (LiteBox has no themes). Changes apply on the next game launch. ──
-    private static Control BuildGameplayPanel(LbSettingsStore s, bool readOnly, float dpiS, out Action apply)
+    private static Control BuildGameplayPanel(LbSettingsStore s, bool readOnly, float dpiS, LiteBoxConfig? cfg, out Action apply)
     {
         int S(int px) => (int)Math.Round(px * dpiS);
         var Bg = LiteBoxTheme.Bg;
@@ -143,7 +146,7 @@ internal static class LbGlobalOptions
         var Dim = LiteBoxTheme.SubFg;
         var Panel2 = LiteBoxTheme.Panel2;
         var applies = new List<Action>();
-        var ini = LiteBoxConfig.LoadForExe();   // PauseHotkey / ScreenCaptureKey live here
+        var ini = cfg ?? LiteBoxConfig.LoadForExe();   // SHARED with ApplyFinished's save (see AddSections); PauseHotkey / ScreenCaptureKey live here
         bool iniDirty = false;
 
         CheckBox Chk(string t, bool v, Point loc) => new() { Text = t, Location = loc, AutoSize = true, ForeColor = Fg, BackColor = Bg, Checked = v, Enabled = !readOnly };

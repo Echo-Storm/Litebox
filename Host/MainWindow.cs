@@ -1492,7 +1492,7 @@ internal sealed class MainWindow : Form, IMessageFilter
                 SetRollingRefresh = v => { _cfg.RaStartupRollingRefresh = v; _cfg.Save(); },
                 OpenMapping = () => { try { using var d = new Ra.RaMappingDialog(RaPlatformNamesSorted()); d.ShowDialog(this); } catch (Exception ex) { Console.WriteLine("[ra-lite] mapping dialog: " + ex.Message); } },
             };
-            Options.LbGlobalOptions.AddSections(w, hdm2.LbSettings, hdm2.ReadOnly, raScan);
+            Options.LbGlobalOptions.AddSections(w, hdm2.LbSettings, hdm2.ReadOnly, raScan, _cfg);   // share _cfg so ApplyFinished's Save persists the panel's LiteBox.ini edits
         }
 
         // Danger zone — full self-uninstall. Last section.
