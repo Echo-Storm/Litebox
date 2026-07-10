@@ -96,27 +96,24 @@ internal static class PauseManager
 
     // ── Arm / disarm (called by HostLaunch around the emulator's lifetime) ──
 
-    /// <summary>Registers the pause hotkey for this launch. No-op when pause is
-    /// disabled (LiteBox.ini PauseEnabled=false) or the emulator opts out
-    /// (UsePauseScreen=false).</summary>
+    /// <summary>Registers the pause hotkey for this launch. No-op when pause resolves OFF for this game
+    /// (game override → emulator field → global default).</summary>
     public static void Arm(Process proc, IEmulator? emulator, IGame game)
     {
         // emulator may be null: store / direct-exe / DOSBox games pause too — the LL hotkey hook,
         // process suspend and pause screen are all emulator-independent; only the AHK scripts and
         // the per-emulator field lookups fall back to global / per-game defaults when it's null.
         if (proc == null) return;
-        // Global master switch now lives in Settings.xml (LB · Gameplay → Use Game
-        // Pause Screen); read fresh so an options change applies to the next launch.
-        if (!Gameplay.GameplaySettings.PauseEnabledGlobal()) return;
-        // Per-game pause override (LaunchedGame snapshot, captured pre-drop) wins
-        // over the emulator's setting — exactly LB's Edit Game pause panel.
+        // "Use Game Pause Screen" resolved strictly game → emulator → global, symmetric with the startup
+        // screen: the global (Settings.xml · Gameplay) is a DEFAULT, not a hard gate — a per-game or
+        // per-emulator override can re-ENABLE pause even when the global is off (and vice-versa). The
+        // per-game value comes from the LaunchedGame snapshot (captured pre-drop), like LB's Edit Game panel.
         var snap0 = LaunchedGame.Current;
-        // Default when there's no per-emulator field: emulator games keep LB's true; non-emulator games
-        // (emulator null) take the global "use pause for non-emu games" default.
-        bool useDef = emulator != null ? true : Gameplay.GameplaySettings.NonEmuUsePause();
-        bool usePause = snap0 is { PauseOverride: true } ? snap0.PauseUse : FieldBool(emulator, "UsePauseScreen", useDef);
+        bool globalUse = emulator != null ? Gameplay.GameplaySettings.PauseEnabledGlobal()
+                                          : Gameplay.GameplaySettings.NonEmuUsePause();
+        bool usePause = snap0 is { PauseOverride: true } ? snap0.PauseUse : FieldBool(emulator, "UsePauseScreen", globalUse);
         if (!usePause)
-        { Console.WriteLine("[pause] pause screen disabled (game/emulator setting) — off"); return; }
+        { Console.WriteLine("[pause] pause screen disabled (game/emulator/global) — off"); return; }
 
         lock (_lock)
         {
