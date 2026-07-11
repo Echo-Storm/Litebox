@@ -20,6 +20,19 @@ internal sealed class InfoOverlay : Form
     private static readonly IntPtr HWND_NOTOPMOST = new(-2);
     private const uint SWP_NOMOVE = 0x2, SWP_NOSIZE = 0x1, SWP_NOACTIVATE = 0x10;
 
+    // Esc-to-dismiss (startup cover only): the cover is WS_EX_NOACTIVATE so it can't receive the key by focus;
+    // a low-level keyboard hook catches Esc, closes the cover (the launch keeps working behind it), and
+    // SWALLOWS the key so it doesn't also reach the loading emulator/game.
+    [DllImport("user32.dll", SetLastError = true)] private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
+    [DllImport("user32.dll", SetLastError = true)] private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+    [DllImport("user32.dll")] private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+    [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)] private static extern IntPtr GetModuleHandle(string? lpModuleName);
+    private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+    private const int WH_KEYBOARD_LL = 13, WM_KEYDOWN = 0x100, WM_SYSKEYDOWN = 0x104, VK_ESCAPE = 0x1B;
+    private readonly Action? _onEscape;
+    private IntPtr _escHook;
+    private LowLevelKeyboardProc? _escProc;   // hold the delegate so the GC can't collect it under native code
+
     // The screen resolution at the moment the cover appeared. When a game switches the display to an
     // exclusive-fullscreen mode it CHANGES this — the signal that we must stop asserting TOPMOST: a topmost
     // window on the same monitor stops a D3D app from holding exclusive mode, so it minimises itself ("the
@@ -45,11 +58,12 @@ internal sealed class InfoOverlay : Form
     private readonly float _s;
     private int S(int px) => (int)Math.Round(px * _s);
 
-    public InfoOverlay(PauseContext ctx, string banner, bool hideCursor, bool noActivate = false, int? etaMs = null, bool aggressive = false)
+    public InfoOverlay(PauseContext ctx, string banner, bool hideCursor, bool noActivate = false, int? etaMs = null, bool aggressive = false, Action? onEscape = null)
     {
         _banner = banner ?? "";
         _noActivate = noActivate;
         _aggressive = aggressive;
+        _onEscape = onEscape;
         _etaMs = etaMs.HasValue && etaMs.Value > 0 ? etaMs : null;
         _s = DeviceDpi / 96f;
 
@@ -127,6 +141,32 @@ internal sealed class InfoOverlay : Form
             };
             _progressTimer.Start();
         }
+
+        // Esc-to-dismiss (startup cover only). Installed on THIS (the UiThread) — it has a message pump, so the
+        // low-level hook callback fires here too. Removed in Dispose.
+        if (_onEscape != null)
+        {
+            _escProc = EscHookProc;
+            _escHook = SetWindowsHookEx(WH_KEYBOARD_LL, _escProc, GetModuleHandle(null), 0);
+            if (_escHook == IntPtr.Zero) Console.WriteLine("[startup] Esc-hook SetWindowsHookEx failed — Esc-to-dismiss unavailable");
+        }
+    }
+
+    private IntPtr EscHookProc(int nCode, IntPtr wParam, IntPtr lParam)
+    {
+        if (nCode >= 0 && (wParam == (IntPtr)WM_KEYDOWN || wParam == (IntPtr)WM_SYSKEYDOWN))
+        {
+            int vk = Marshal.ReadInt32(lParam);   // KBDLLHOOKSTRUCT.vkCode is the first field
+            if (vk == VK_ESCAPE)
+            {
+                var cb = _onEscape;
+                // Close off the hook thread (the callback must return fast) and SWALLOW Esc so the loading
+                // emulator/game never sees it.
+                try { if (cb != null && IsHandleCreated && !IsDisposed) BeginInvoke(new Action(() => { try { cb(); } catch { } })); } catch { }
+                return (IntPtr)1;
+            }
+        }
+        return CallNextHookEx(_escHook, nCode, wParam, lParam);
     }
 
     /// <summary>WS_EX_COMPOSITED: window + children drawn into one buffer (no flicker).
@@ -322,6 +362,7 @@ internal sealed class InfoOverlay : Form
     {
         if (disposing)
         {
+            if (_escHook != IntPtr.Zero) { try { UnhookWindowsHookEx(_escHook); } catch { } _escHook = IntPtr.Zero; _escProc = null; }
             try { _topTimer?.Stop(); _topTimer?.Dispose(); } catch { }
             _topTimer = null;
             try { _fadeTimer?.Stop(); _fadeTimer?.Dispose(); } catch { }

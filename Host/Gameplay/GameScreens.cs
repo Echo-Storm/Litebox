@@ -63,7 +63,8 @@ internal static class GameScreens
                 CloseLocked();
                 try
                 {
-                    _overlay = new InfoOverlay(ctx, "NOW LOADING…", hide, noActivate: stayTop, etaMs: etaMs, aggressive: aggressive);
+                    _overlay = new InfoOverlay(ctx, "NOW LOADING…", hide, noActivate: stayTop, etaMs: etaMs, aggressive: aggressive,
+                        onEscape: () => { Console.WriteLine("[gamescreens] startup cover dismissed by Esc (launch keeps working behind)"); Close(fadeMs); });
                     _overlay.Show();
                     _overlay.ForceToFront(8);   // no-op in stay-on-top mode
                 }

@@ -43,36 +43,104 @@ internal static class StoreProcessWatcher
         return set;
     }
 
-    /// <summary>Kill the store's client processes that are NOT in <paramref name="before"/> — i.e. the
-    /// ones THIS launch started. A client the user already had open (its PID is in the snapshot) is left
-    /// running.</summary>
+    // A hard Kill can corrupt a store client's session (the EA app then re-prompts for login next launch).
+    // So we ASK it to close cleanly first — Steam's real -shutdown command, WM_CLOSE to the others' windows
+    // (like clicking the X) — wait a few seconds, and only Kill the ones that ignore it (tray-minimisers /
+    // hung) as a fallback. The wait + fallback run on a background thread so the exit flow (GAME OVER, return
+    // to the frontend) isn't held up.
+    private const int GracefulWaitMs = 6000;
+
+    /// <summary>Close (gracefully, kill as fallback) the store's client processes that are NOT in
+    /// <paramref name="before"/> — i.e. the ones THIS launch started. A client the user already had open is
+    /// left alone.</summary>
     public static void KillClientsStartedSince(StoreKind kind, HashSet<int> before)
     {
         if (before == null) return;
+        CloseOrKill(kind, ClientPids(kind, before), "started-since");
+    }
+
+    /// <summary>Close (gracefully, kill as fallback) ALL of the store's client processes — including one the
+    /// user already had running. Used when KillStoreLauncherEvenIfPreRunning is set.</summary>
+    public static void KillAllClients(StoreKind kind)
+        => CloseOrKill(kind, ClientPids(kind, null), "all");
+
+    private static List<(string name, int pid)> ClientPids(StoreKind kind, HashSet<int>? exclude)
+    {
+        var list = new List<(string, int)>();
         foreach (var name in ClientNames(kind))
             foreach (var p in Process.GetProcessesByName(name))
+            { try { if (exclude == null || !exclude.Contains(p.Id)) list.Add((name, p.Id)); } catch { } finally { try { p.Dispose(); } catch { } } }
+        return list;
+    }
+
+    private static void CloseOrKill(StoreKind kind, List<(string name, int pid)> targets, string tag)
+    {
+        if (targets.Count == 0) return;
+
+        // 1. Graceful signal (instant, non-blocking).
+        if (kind == StoreKind.Steam)
+        {
+            string? exe = null;
+            foreach (var t in targets) { var pth = ImagePath(t.pid); if (!string.IsNullOrEmpty(pth)) { exe = pth; break; } }
+            if (!string.IsNullOrEmpty(exe))
+                try { Process.Start(new ProcessStartInfo(exe!, "-shutdown") { UseShellExecute = false, CreateNoWindow = true }); StoreTrace.Log("store close: steam -shutdown (graceful)"); }
+                catch (Exception ex) { StoreTrace.Log("store close: steam -shutdown failed: " + ex.Message); }
+        }
+        foreach (var t in targets) PostCloseToWindows(t.pid, t.name);
+
+        // 2. Wait for a clean exit, then Kill the survivors — on a background thread so GAME OVER / the return
+        //    to the frontend isn't delayed by the grace period.
+        new System.Threading.Thread(() =>
+        {
+            var sw = Stopwatch.StartNew();
+            while (sw.ElapsedMilliseconds < GracefulWaitMs)
+            {
+                bool anyAlive = false;
+                foreach (var t in targets) if (IsAlive(t.pid)) { anyAlive = true; break; }
+                if (!anyAlive) break;
+                System.Threading.Thread.Sleep(200);
+            }
+            foreach (var t in targets)
+            {
+                if (!IsAlive(t.pid)) { StoreTrace.Log($"store close: {t.name} pid={t.pid} exited cleanly ({tag})"); continue; }
+                try { using var p = Process.GetProcessById(t.pid); p.Kill(); StoreTrace.Log($"store close: {t.name} pid={t.pid} ignored close — killed ({tag})"); }
+                catch (Exception ex) { StoreTrace.Log($"store close: kill {t.name} pid={t.pid} failed: {ex.Message}"); }
+            }
+        }) { IsBackground = true, Name = "litebox-store-close" }.Start();
+    }
+
+    private static bool IsAlive(int pid)
+    { try { using var p = Process.GetProcessById(pid); return !p.HasExited; } catch { return false; } }
+
+    /// <summary>PostMessage WM_CLOSE to every visible top-level window owned by <paramref name="pid"/> — the
+    /// same as clicking the X. Clean-exiting clients quit; tray-minimisers stay up and get killed as the
+    /// fallback. Async: the app handles it on its own thread while we poll for the real exit.</summary>
+    private static void PostCloseToWindows(int pid, string name)
+    {
+        int posted = 0;
+        try
+        {
+            EnumWindows((h, _) =>
             {
                 try
                 {
-                    if (!before.Contains(p.Id)) { p.Kill(); StoreTrace.Log($"killed store launcher {name} pid={p.Id}"); }
+                    GetWindowThreadProcessId(h, out uint wpid);
+                    if (wpid == (uint)pid && IsWindowVisible(h)) { PostMessage(h, WM_CLOSE, IntPtr.Zero, IntPtr.Zero); posted++; }
                 }
-                catch (Exception ex) { StoreTrace.Log($"kill {name} pid={p.Id} failed: {ex.Message}"); }
-                finally { try { p.Dispose(); } catch { } }
-            }
+                catch { }
+                return true;
+            }, IntPtr.Zero);
+        }
+        catch { }
+        if (posted > 0) StoreTrace.Log($"store close: WM_CLOSE → {name} pid={pid} ({posted} window(s))");
     }
 
-    /// <summary>Kill ALL of the store's client processes — including one the user already had running
-    /// before the launch. Used when KillStoreLauncherEvenIfPreRunning is set.</summary>
-    public static void KillAllClients(StoreKind kind)
-    {
-        foreach (var name in ClientNames(kind))
-            foreach (var p in Process.GetProcessesByName(name))
-            {
-                try { p.Kill(); StoreTrace.Log($"killed store launcher {name} pid={p.Id} (all)"); }
-                catch (Exception ex) { StoreTrace.Log($"kill-all {name} pid={p.Id} failed: {ex.Message}"); }
-                finally { try { p.Dispose(); } catch { } }
-            }
-    }
+    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+    [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc cb, IntPtr lParam);
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+    [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+    private const uint WM_CLOSE = 0x0010;
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern IntPtr OpenProcess(int access, bool inherit, int pid);
