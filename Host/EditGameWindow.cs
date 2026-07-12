@@ -261,12 +261,12 @@ internal sealed partial class EditGameWindow : Form   // Game Saves page lives i
         if (!IsMulti) metadata.Nodes.Add(N("Game Saves", "GameSaves"));     // per-game too (no multi view yet)
 
         var media = N("Media", "Media");
-        media.Nodes.AddRange(new[]
-        {
-            N("Images", "Images"),
-            N("Videos", "Videos"),
-            N("3D Model Settings", "ModelSettings"),
-        });
+        var images = N("Images", "Images");
+        if (!IsMulti) foreach (var r in ImgRegroupements()) images.Nodes.Add(N(r, r));   // one child per image category
+        media.Nodes.Add(images);
+        media.Nodes.Add(N("Videos", "Videos"));
+        media.Nodes.Add(N("3D Model Settings", "ModelSettings"));
+        media.Nodes.Add(N("Image Query", "ImageQuery"));   // batch tool — works for 1..N selected games
 
         var launching = N("Launching", "Launching");
         var dosbox = N("DOSBox", "DOSBox");
@@ -303,7 +303,7 @@ internal sealed partial class EditGameWindow : Form   // Game Saves page lives i
         _titleBar.Text = _tree.SelectedNode?.Text ?? key;
         if (!_pages.TryGetValue(key, out var page))
         {
-            page = key switch
+            page = (!IsMulti && ImgIsRegroupement(key)) ? BuildImageCategoryPage(key) : key switch
             {
                 "Metadata" => BuildMetadataPage(),
                 "CustomFields" => BuildCustomFieldsPage(),
@@ -312,6 +312,8 @@ internal sealed partial class EditGameWindow : Form   // Game Saves page lives i
                 "AdditionalApps" => IsMulti ? Placeholder("Additional Apps") : BuildAdditionalAppsPage(),
                 "AlternateNames" => IsMulti ? Placeholder("Alternate Names") : BuildAlternateNamesPage(),
                 "ControllerSupport" => IsMulti ? BuildControllerSupportMultiPage() : BuildControllerSupportPage(),
+                "Images" => IsMulti ? Placeholder("Images") : BuildImagesPage(),
+                "ImageQuery" => BuildImageQueryPage(),   // works for 1..N games (single or multi selection)
                 "Launching" => BuildLaunchingPage(),   // main page supports multi (merged fields); sub-pages below stay solo
                 "DOSBox" => BuildDosBoxPage(),   // main DOSBox page supports multi (3-state Use-DOSBox + merged paths)
                 "Mounts" => IsMulti ? Placeholder("Mounts") : BuildMountsPage(),
@@ -1021,6 +1023,7 @@ internal sealed partial class EditGameWindow : Form   // Game Saves page lives i
         ReloadAddAppsIfBuilt();            // Additional Versions / Apps pages too
         ReloadNamesControllersIfBuilt();   // Alternate Names / Controller Support too
         ReloadLaunchingIfBuilt();          // the Launching branch too
+        ReloadImagesIfBuilt();             // Media → Images page too
         UpdateChrome();
     }
 

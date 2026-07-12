@@ -1,0 +1,105 @@
+// Read-only access to LaunchBox's offline games database (<LB>\Metadata\LaunchBox.Metadata.db) — present on
+// ANY LaunchBox install, so this works standalone. The GameImages table lists every image the online DB has
+// for a game (by DatabaseId): its CDN FileName, Type, Region and CRC32. On a plain LaunchBox that's all five
+// columns there are. When ExtendDB's Extended Database module is active it MERGES enriched rows into the very
+// same table (LbDbMerger), adding Origin / Duplicate / FileType and non-LaunchBox sources (screenscraper,
+// steam, vndb…). We read those columns defensively when present so the download can route each image through
+// ExtendDB's per-origin fetcher; on a base install they default to launchbox / 0.
+//
+// The launchbox CDN URL is https://images.launchbox-app.com/{FileName} — valid for Origin='launchbox' only.
+// For other origins the FileName is a raw source token and the real URL is built by ExtendDB's MediaApi, so
+// downloads/previews of those must go through MediaApiBridge, never the CDN.
+
+#nullable enable
+
+using System;
+using System.Collections.Generic;
+using System.IO;
+using Microsoft.Data.Sqlite;
+
+namespace LbApiHost.Host.Media;
+
+internal static class MetadataDb
+{
+    public const string ImageCdnBase = "https://images.launchbox-app.com/";
+
+    public readonly struct WebImage
+    {
+        public readonly int DatabaseId, Duplicate;
+        public readonly string FileName, Type, Region, Origin, FileType;
+        public readonly long Crc32;
+        public WebImage(int db, string fn, string ty, string rg, long crc, string origin, int dup, string ft)
+        {
+            DatabaseId = db; FileName = fn ?? ""; Type = ty ?? ""; Region = rg ?? ""; Crc32 = crc;
+            Origin = string.IsNullOrEmpty(origin) ? "launchbox" : origin; Duplicate = dup; FileType = ft ?? "";
+        }
+        /// <summary>Launchbox CDN URL — only correct when <see cref="Origin"/> is "launchbox".</summary>
+        public string Url => ImageCdnBase + FileName.Replace("\\", "/");
+        /// <summary>Stable per-row identity for selection / lookup (FileName alone isn't unique across origins).</summary>
+        public string Key => $"{Origin}|{Type}|{Region}|{Duplicate}|{FileName}";
+        public bool IsLaunchbox => string.Equals(Origin, "launchbox", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? DbPath()
+    {
+        var root = MediaResolver.LbRoot;
+        if (string.IsNullOrEmpty(root)) return null;
+        var p = Path.Combine(root, "Metadata", "LaunchBox.Metadata.db");
+        return File.Exists(p) ? p : null;
+    }
+
+    /// <summary>True when the offline metadata DB is on disk (so web images can be listed at all).</summary>
+    public static bool Available => DbPath() != null;
+
+    /// <summary>Every image the online/merged DB has for a game (by its DatabaseId), or empty. Read-only.</summary>
+    public static List<WebImage> ImagesForGame(int databaseId) => ImagesForGame(DbPath(), databaseId);
+
+    /// <summary>Path-parameterized reader (also the unit-test seam): reads GameImages from an explicit DB file.</summary>
+    internal static List<WebImage> ImagesForGame(string? db, int databaseId)
+    {
+        var list = new List<WebImage>();
+        if (db == null || databaseId <= 0) return list;
+        try
+        {
+            var cs = new SqliteConnectionStringBuilder { DataSource = db, Mode = SqliteOpenMode.ReadOnly, Cache = SqliteCacheMode.Shared }.ToString();
+            using var con = new SqliteConnection(cs);
+            con.Open();
+
+            // Discover which columns this DB actually has — base LB has 5, an Extended-merged one has more.
+            var cols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            using (var pc = con.CreateCommand())
+            {
+                pc.CommandText = "PRAGMA table_info(\"GameImages\")";
+                using var pr = pc.ExecuteReader();
+                while (pr.Read()) cols.Add(pr.GetString(1));
+            }
+            if (!cols.Contains("FileName") || !cols.Contains("Type")) return list;
+
+            string idCol = cols.Contains("DatabaseId") ? "DatabaseId" : (cols.Contains("DatabaseID") ? "DatabaseID" : "DatabaseId");
+            string Col(string name, string literal) => cols.Contains(name) ? "\"" + name + "\"" : literal;
+            string sql =
+                $"SELECT \"FileName\", \"Type\", {Col("Region", "''")}, {Col("CRC32", "0")}, " +
+                $"{Col("Origin", "'launchbox'")}, {Col("Duplicate", "0")}, {Col("FileType", "''")} " +
+                $"FROM \"GameImages\" WHERE \"{idCol}\" = $id";
+
+            using var cmd = con.CreateCommand();
+            cmd.CommandText = sql;
+            cmd.Parameters.Add(new SqliteParameter("$id", databaseId));
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                string fn = r.IsDBNull(0) ? "" : r.GetString(0);
+                if (string.IsNullOrEmpty(fn)) continue;
+                string ty = r.IsDBNull(1) ? "" : r.GetString(1);
+                string rg = r.IsDBNull(2) ? "" : r.GetString(2);
+                long crc = r.IsDBNull(3) ? 0 : r.GetInt64(3);
+                string origin = r.IsDBNull(4) ? "launchbox" : r.GetString(4);
+                int dup = r.IsDBNull(5) ? 0 : (int)r.GetInt64(5);
+                string ft = r.IsDBNull(6) ? "" : r.GetString(6);
+                list.Add(new WebImage(databaseId, fn, ty, rg, crc, origin, dup, ft));
+            }
+        }
+        catch { }
+        return list;
+    }
+}

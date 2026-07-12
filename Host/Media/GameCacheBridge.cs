@@ -71,6 +71,37 @@ internal static class GameCacheBridge
     /// prefer ExtendDB's cache and do NOT build/use the host one.</summary>
     public static bool ExtendDbPresent { get { Probe(); return _gcType != null; } }
 
+    private static MethodInfo _rebuildPlatform;
+    private static bool _rebuildPlatformResolved;
+
+    /// <summary>Invalidate the media cache for a platform after an image/video file change on disk — works
+    /// whether ExtendDB's GameCache (reflected) OR our own HostGameCache port is the active backend. Both
+    /// expose the same <c>RebuildPlatform(IPlatform, bool)</c>; the disk is the source of truth, this just
+    /// makes the cached best-image/video paths catch up. Non-blocking.</summary>
+    public static void RebuildPlatform(Unbroken.LaunchBox.Plugins.Data.IPlatform platform)
+    {
+        if (platform == null) return;
+        Probe();
+        if (_gcType != null)   // ExtendDB present → its cache is authoritative; invalidate it (reflected)
+        {
+            try
+            {
+                if (!_rebuildPlatformResolved)
+                {
+                    _rebuildPlatformResolved = true;
+                    _rebuildPlatform = _gcType.GetMethod("RebuildPlatform",
+                        new[] { typeof(Unbroken.LaunchBox.Plugins.Data.IPlatform), typeof(bool) });
+                }
+                _rebuildPlatform?.Invoke(null, new object[] { platform, false });
+            }
+            catch { }
+        }
+        else if (HostGameCache.Enabled)   // ExtendDB absent → our own port
+        {
+            try { LbApiHost.Host.Gc.GameCache.RebuildPlatform(platform, false); } catch { }
+        }
+    }
+
     /// <summary>True iff ExtendDB's GameCache is loaded, globally ready, and holds this platform.</summary>
     private static bool ExtendReady(string platformName)
     {

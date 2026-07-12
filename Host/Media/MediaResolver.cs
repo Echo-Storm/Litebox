@@ -226,6 +226,38 @@ internal static class MediaResolver
         { var d = MakeImageDetails(path, type, region); if (d != null) list.Add(d); }
     }
 
+    /// <summary>Every image file for a game as (path, type, region) — the same walk as
+    /// <see cref="AllImages"/> but without the SDK ImageDetails wrapper (so no reflection). Grouped by
+    /// image type, root files then region sub-folders, each -NNN-ordered. region "" = root.</summary>
+    public static List<(string path, string type, string region)> AllImageFiles(string platformName, Guid id, string title)
+    {
+        var result = new List<(string, string, string)>();
+        if (string.IsNullOrEmpty(platformName)) return result;
+        var plat = SafePlatform(platformName);
+        if (plat == null) return result;
+        string sani = Sanitize(title);
+        foreach (var type in AllImageTypes())
+        {
+            string folder = SafeFolder(plat, type);
+            if (folder == null || !Directory.Exists(folder)) continue;
+            foreach (var p in AllInDir(folder, id, sani, ImageExts)) result.Add((p, type, ""));
+            foreach (var sub in SafeSubdirs(folder))
+                foreach (var p in AllInDir(sub, id, sani, ImageExts)) result.Add((p, type, Path.GetFileName(sub)));
+        }
+        return result;
+    }
+
+    /// <summary>The on-disk folder for a platform's image type (root, no region), created-or-not. Null if
+    /// the platform / folder can't be resolved. Used when ADDING a new image.</summary>
+    public static string TypeFolder(string platformName, string imageType)
+    {
+        var plat = SafePlatform(platformName);
+        return plat == null ? null : SafeFolder(plat, imageType);
+    }
+
+    /// <summary>The known image-type names (LaunchBox's list when available, else the built-in defaults).</summary>
+    public static IReadOnlyList<string> ImageTypeNames() => AllImageTypes().ToList();
+
     /// <summary>
     /// All image paths for ONE exact image type, in LaunchBox-native order: region
     /// priority first (root files last), then lowest "-NNN" suffix. Pure IO, so it
