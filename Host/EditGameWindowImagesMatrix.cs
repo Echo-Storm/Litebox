@@ -45,8 +45,36 @@ internal sealed partial class EditGameWindow
     private List<string> _mxCats = new();
     private readonly object _mxLock = new();                             // _mxRows is touched from the UI thread (paint) AND the batch thread
     private readonly Dictionary<int, MxCell[]> _mxRows = new();          // row → cells (computed on demand)
+    // Thumbnails. A 3000-game selection addresses ~35k cells, so BOTH the cache and the fetch queue must be
+    // bounded or we blow up memory and starve the thread pool:
+    //   • LRU-capped cache (an unbounded one would hold gigabytes of decoded bitmaps);
+    //   • a small semaphore, because a web thumb is a BLOCKING network call on a pool thread — hundreds at
+    //     once starve the pool and nothing ever lands (which is exactly what happened);
+    //   • and a visibility check taken WHEN THE SLOT IS GRANTED, so cells scrolled far away are dropped
+    //     instead of being fetched for nothing.
+    private const int MxThumbCacheMax = 600;    // decoded bitmaps kept in RAM (35k would be gigabytes)
+    private const int MxQueueMax = 3000;        // pending fetches kept (the farthest from the viewport are shed)
+    private const int MxWorkerCount = 4;        // a web thumb is a BLOCKING download: hundreds at once starve the pool
+
+    private readonly object _mxThumbLock = new();
     private readonly Dictionary<string, Image?> _mxThumbs = new(StringComparer.OrdinalIgnoreCase);  // key → thumb (null = failed)
-    private readonly HashSet<string> _mxThumbLoading = new(StringComparer.OrdinalIgnoreCase);
+    private readonly LinkedList<string> _mxLru = new();                                             // most-recent first
+    private readonly Dictionary<string, LinkedListNode<string>> _mxLruNodes = new(StringComparer.OrdinalIgnoreCase);
+
+    private sealed class MxJob
+    {
+        public string Key = "";
+        public string? Path;                  // local image
+        public MetadataDb.WebImage? Web;      // web stand-in
+        public int Row, Col;
+    }
+
+    private readonly object _mxQLock = new();
+    private readonly Dictionary<string, MxJob> _mxPending = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<MxJob> _mxQueue = new();
+    private int _mxWorkers;
+    private volatile int _mxVisFirst, _mxVisLast;   // visible row window, kept up to date on the UI thread
+
     private bool _mxShowWeb;
     private Label? _mxStatus;
 
@@ -129,8 +157,14 @@ internal sealed partial class EditGameWindow
             else if (e.Button == MouseButtons.Right) MxCellMenu(grid, e.RowIndex, e.ColumnIndex);
         };
 
+        // Keep the visible-row window fresh: the fetch workers use it to always serve what's on screen first.
+        grid.Scroll += (_, _) => MxUpdateVisible(grid);
+        grid.Resize += (_, _) => MxUpdateVisible(grid);
+        grid.HandleCreated += (_, _) => MxUpdateVisible(grid);
+
         grid.RowCount = _editGames.Count;
         _mxGrid = grid;
+        MxUpdateVisible(grid);
 
         root.Controls.Add(grid);   // Fill first …
         root.Controls.Add(bar);    // … Top last
@@ -280,50 +314,193 @@ internal sealed partial class EditGameWindow
         e.Handled = true;
     }
 
-    /// <summary>Thumb for a cell, decoding it on a background thread the first time (the grid repaints the
-    /// cell when it lands). Local images are read from disk; web ones are fetched through the normal
-    /// per-origin fetcher. Null while loading / on failure.</summary>
+    /// <summary>Track the rows currently on screen, so queued fetches for rows we've scrolled past get dropped.</summary>
+    private void MxUpdateVisible(DataGridView grid)
+    {
+        try
+        {
+            int first = Math.Max(0, grid.FirstDisplayedScrollingRowIndex);
+            _mxVisFirst = first;
+            _mxVisLast = first + Math.Max(1, grid.DisplayedRowCount(true));
+        }
+        catch { }
+    }
+
+    /// <summary>Thumb for a cell. Cached ones come back instantly; the rest are QUEUED (never dropped) and
+    /// decoded by a few background workers that always serve the rows nearest the viewport first. Null while
+    /// it's on its way.</summary>
     private Image? MxThumb(string key, MxCell cell, int row, int col)
     {
-        if (_mxThumbs.TryGetValue(key, out var have)) return have;
-        if (!_mxThumbLoading.Add(key)) return null;
-
-        bool isWeb = cell.Path == null && cell.Web.HasValue;
-        var web = cell.Web;
-        string? path = cell.Path;
-
-        System.Threading.Tasks.Task.Run(() =>
+        lock (_mxThumbLock)
         {
-            Image? thumb = null;
-            try
+            if (_mxThumbs.TryGetValue(key, out var have)) { MxTouch(key); return have; }
+        }
+
+        lock (_mxQLock)
+        {
+            if (_mxPending.ContainsKey(key)) return null;   // already queued
+            var job = new MxJob { Key = key, Path = cell.Path, Web = cell.Web, Row = row, Col = col };
+            _mxPending[key] = job;
+            _mxQueue.Add(job);
+
+            // Keep the queue bounded: shed the entries FARTHEST from what we're looking at. They aren't lost —
+            // scrolling back re-queues them, and by then the disk cache usually answers without a download.
+            if (_mxQueue.Count > MxQueueMax)
             {
-                byte[]? bytes = isWeb ? ImgFetchWebBytes(web!.Value)
-                                      : (path != null && File.Exists(path) ? File.ReadAllBytes(path) : null);
-                if (bytes != null && bytes.Length > 0)
+                int centre = (_mxVisFirst + _mxVisLast) / 2;
+                _mxQueue.Sort((a, b) => Math.Abs(a.Row - centre).CompareTo(Math.Abs(b.Row - centre)));
+                for (int i = _mxQueue.Count - 1; i >= MxQueueMax; i--)
                 {
-                    using var ms = new MemoryStream(bytes);
-                    using var src = Image.FromStream(ms);
-                    int maxW = S(MxThumbW) * 2, maxH = S(MxThumbH) * 2;   // 2× for crisp scaling
-                    double sc = Math.Min(1.0, Math.Min((double)maxW / src.Width, (double)maxH / src.Height));
-                    thumb = new Bitmap(src, Math.Max(1, (int)(src.Width * sc)), Math.Max(1, (int)(src.Height * sc)));
+                    _mxPending.Remove(_mxQueue[i].Key);
+                    _mxQueue.RemoveAt(i);
                 }
             }
-            catch { thumb = null; }
 
+            while (_mxWorkers < MxWorkerCount)
+            {
+                _mxWorkers++;
+                System.Threading.Tasks.Task.Run(MxWorkerLoop);
+            }
+        }
+        return null;
+    }
+
+    private void MxWorkerLoop()
+    {
+        while (true)
+        {
+            MxJob job;
+            lock (_mxQLock)
+            {
+                if (_mxQueue.Count == 0) { _mxWorkers--; return; }
+
+                // Highest priority = nearest the rows on screen, so what you're looking at never waits behind
+                // what you've scrolled past (which still loads, just later).
+                int centre = (_mxVisFirst + _mxVisLast) / 2;
+                int best = 0, bestD = int.MaxValue;
+                for (int i = 0; i < _mxQueue.Count; i++)
+                {
+                    int d = Math.Abs(_mxQueue[i].Row - centre);
+                    if (d < bestD) { bestD = d; best = i; }
+                }
+                job = _mxQueue[best];
+                _mxQueue.RemoveAt(best);
+                _mxPending.Remove(job.Key);
+            }
+
+            Image? thumb = MxDecode(job);
+
+            var grid = _mxGrid;
+            if (grid == null || grid.IsDisposed || !grid.IsHandleCreated)
+            {
+                thumb?.Dispose();
+                lock (_mxQLock) { _mxWorkers--; }
+                return;
+            }
             try
             {
-                var grid = _mxGrid;
-                if (grid == null || grid.IsDisposed || !grid.IsHandleCreated) { thumb?.Dispose(); return; }
                 grid.BeginInvoke(new Action(() =>
                 {
                     if (grid.IsDisposed) { thumb?.Dispose(); return; }
-                    _mxThumbs[key] = thumb;
-                    if (row < grid.RowCount && col < grid.ColumnCount) grid.InvalidateCell(col, row);
+                    MxStoreThumb(job.Key, thumb);
+                    if (job.Row < grid.RowCount && job.Col < grid.ColumnCount) grid.InvalidateCell(job.Col, job.Row);
                 }));
             }
             catch { thumb?.Dispose(); }
-        });
+        }
+    }
+
+    /// <summary>
+    /// Produce a cell's thumbnail. A LOCAL image is just decoded from disk. A WEB one has no thumbnail
+    /// endpoint — the CDN only serves the full-size file — so the download is expensive and we persist the
+    /// DOWNSCALED result under Core\litebox\thumbcache: scrolling back never re-downloads.
+    /// </summary>
+    private Image? MxDecode(MxJob job)
+    {
+        try
+        {
+            bool isWeb = job.Path == null && job.Web.HasValue;
+
+            if (isWeb)
+            {
+                string? cached = MxCachePath(job.Key);
+                if (cached != null && File.Exists(cached))
+                {
+                    try { using var cs = new MemoryStream(File.ReadAllBytes(cached)); return new Bitmap(Image.FromStream(cs)); }
+                    catch { try { File.Delete(cached); } catch { } }   // corrupt entry → refetch
+                }
+
+                var bytes = ImgFetchWebBytes(job.Web!.Value);
+                var thumb = MxScale(bytes);
+                if (thumb != null && cached != null)
+                {
+                    try { thumb.Save(cached, System.Drawing.Imaging.ImageFormat.Jpeg); } catch { }
+                }
+                return thumb;
+            }
+
+            if (job.Path != null && File.Exists(job.Path))
+                return MxScale(File.ReadAllBytes(job.Path));   // local: cheap, no disk cache needed
+        }
+        catch { }
         return null;
+    }
+
+    private Image? MxScale(byte[]? bytes)
+    {
+        if (bytes == null || bytes.Length == 0) return null;
+        try
+        {
+            using var ms = new MemoryStream(bytes);
+            using var src = Image.FromStream(ms);
+            int maxW = S(MxThumbW), maxH = S(MxThumbH);
+            double sc = Math.Min(1.0, Math.Min((double)maxW / src.Width, (double)maxH / src.Height));
+            return new Bitmap(src, Math.Max(1, (int)(src.Width * sc)), Math.Max(1, (int)(src.Height * sc)));
+        }
+        catch { return null; }
+    }
+
+    private static string? _mxCacheDir;
+    private static string? MxCachePath(string key)
+    {
+        try
+        {
+            _mxCacheDir ??= LiteBoxPaths.Dir("thumbcache");   // <LB>\Core\litebox\thumbcache (created on demand)
+            using var md5 = System.Security.Cryptography.MD5.Create();
+            var hash = md5.ComputeHash(System.Text.Encoding.UTF8.GetBytes(key));
+            return Path.Combine(_mxCacheDir, Convert.ToHexString(hash) + ".jpg");
+        }
+        catch { return null; }
+    }
+
+    /// <summary>Insert a decoded thumb, evicting the least-recently-painted ones past the cap.</summary>
+    private void MxStoreThumb(string key, Image? thumb)
+    {
+        lock (_mxThumbLock)
+        {
+            _mxThumbs[key] = thumb;
+            MxTouch(key);
+
+            while (_mxLru.Count > MxThumbCacheMax)
+            {
+                var oldest = _mxLru.Last;
+                if (oldest == null) break;
+                _mxLru.RemoveLast();
+                _mxLruNodes.Remove(oldest.Value);
+                if (_mxThumbs.TryGetValue(oldest.Value, out var img))
+                {
+                    _mxThumbs.Remove(oldest.Value);
+                    try { img?.Dispose(); } catch { }
+                }
+            }
+        }
+    }
+
+    /// <summary>Mark a key most-recently-used. Caller holds _mxThumbLock.</summary>
+    private void MxTouch(string key)
+    {
+        if (_mxLruNodes.TryGetValue(key, out var node)) { _mxLru.Remove(node); _mxLru.AddFirst(node); }
+        else _mxLruNodes[key] = _mxLru.AddFirst(key);
     }
 
     // ── "Show web images": explicit batch, with a progress modal ───────────────

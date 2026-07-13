@@ -1260,6 +1260,16 @@ internal sealed partial class EditGameWindow
         ImgStopLongPress();
         try { _imgqConn?.Dispose(); } catch { } _imgqConn = null;   // close the Image Query in-memory SQLite
         try { _imgHttp?.Dispose(); } catch { } _imgHttp = null;      // close the web-image HTTP client
+
+        // Matrix: drop the pending fetches (the workers exit once the queue drains / the grid is gone) and
+        // free the decoded thumbnails — up to MxThumbCacheMax bitmaps would otherwise linger.
+        lock (_mxQLock) { _mxQueue.Clear(); _mxPending.Clear(); }
+        lock (_mxThumbLock)
+        {
+            foreach (var img in _mxThumbs.Values) { try { img?.Dispose(); } catch { } }
+            _mxThumbs.Clear(); _mxLru.Clear(); _mxLruNodes.Clear();
+        }
+
         base.OnFormClosed(e);
     }
 
