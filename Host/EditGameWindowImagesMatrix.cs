@@ -112,7 +112,7 @@ internal sealed partial class EditGameWindow
         var bar = new Panel { Dock = DockStyle.Top, Height = S(38), BackColor = Bg };
         var chkWeb = new CheckBox
         {
-            Text = "Show web images (fill the gaps)", AutoSize = true, ForeColor = Color.FromArgb(190, 150, 230),
+            Text = "Web (fill the gaps)", AutoSize = true, ForeColor = Color.FromArgb(190, 150, 230),
             BackColor = Bg, Font = new Font("Segoe UI", 8.5f), FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand,
             Location = new Point(S(4), S(10)), Checked = false,
         };
@@ -125,7 +125,7 @@ internal sealed partial class EditGameWindow
         {
             chkEmu = new CheckBox
             {
-                Text = "Show EmuMovies images", AutoSize = true, ForeColor = MxEmuColor,
+                Text = "EmuMovies", AutoSize = true, ForeColor = MxEmuColor,
                 BackColor = Bg, Font = new Font("Segoe UI", 8.5f), FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand,
                 Location = new Point(S(228), S(10)), Checked = false,
             };
@@ -137,7 +137,7 @@ internal sealed partial class EditGameWindow
         {
             chkSteam = new CheckBox
             {
-                Text = "Show Steam images", AutoSize = true, ForeColor = MxSteamColor,
+                Text = "Steam", AutoSize = true, ForeColor = MxSteamColor,
                 BackColor = Bg, Font = new Font("Segoe UI", 8.5f), FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand,
                 Location = new Point(S(396), S(10)), Checked = false,
             };
@@ -521,9 +521,10 @@ internal sealed partial class EditGameWindow
     }
 
     /// <summary>
-    /// Produce a cell's thumbnail. A LOCAL image is just decoded from disk. A WEB one has no thumbnail
-    /// endpoint — the CDN only serves the full-size file — so the download is expensive and we persist the
-    /// DOWNSCALED result under Core\litebox\thumbcache: scrolling back never re-downloads.
+    /// Produce a cell's thumbnail. A LOCAL image is just decoded from disk. A WEB one has no thumbnail endpoint
+    /// — the CDN only serves the full-size file — so the download is expensive and we persist the DOWNSCALED
+    /// preview under the shared webimg cache (thumbs\webimg, keyed by WebImage.Key): scrolling back never
+    /// re-downloads, and the single-game editor's tiles hit the exact same files (see ImgWebPreviewBytes).
     /// </summary>
     private Image? MxDecode(MxJob job)
     {
@@ -532,22 +533,7 @@ internal sealed partial class EditGameWindow
             bool isWeb = job.Path == null && job.Web.HasValue;
 
             if (isWeb)
-            {
-                string? cached = MxCachePath(job.Key);
-                if (cached != null && File.Exists(cached))
-                {
-                    try { using var cs = new MemoryStream(File.ReadAllBytes(cached)); return new Bitmap(Image.FromStream(cs)); }
-                    catch { try { File.Delete(cached); } catch { } }   // corrupt entry → refetch
-                }
-
-                var bytes = ImgFetchWebBytes(job.Web!.Value);
-                var thumb = MxScale(bytes);
-                if (thumb != null && cached != null)
-                {
-                    try { thumb.Save(cached, System.Drawing.Imaging.ImageFormat.Jpeg); } catch { }
-                }
-                return thumb;
-            }
+                return MxScale(ImgWebPreviewBytes(job.Web!.Value));   // ≤360 preview (cache→else fetch+cache) → grid-cell bitmap
 
             if (job.Path != null && File.Exists(job.Path))
                 return MxScale(File.ReadAllBytes(job.Path));   // local: cheap, no disk cache needed
@@ -566,19 +552,6 @@ internal sealed partial class EditGameWindow
             int maxW = S(MxThumbW), maxH = S(MxThumbH);
             double sc = Math.Min(1.0, Math.Min((double)maxW / src.Width, (double)maxH / src.Height));
             return new Bitmap(src, Math.Max(1, (int)(src.Width * sc)), Math.Max(1, (int)(src.Height * sc)));
-        }
-        catch { return null; }
-    }
-
-    private static string? _mxCacheDir;
-    private static string? MxCachePath(string key)
-    {
-        try
-        {
-            _mxCacheDir ??= LiteBoxPaths.Dir("thumbcache");   // <LB>\Core\litebox\thumbcache (created on demand)
-            using var md5 = System.Security.Cryptography.MD5.Create();
-            var hash = md5.ComputeHash(System.Text.Encoding.UTF8.GetBytes(key));
-            return Path.Combine(_mxCacheDir, Convert.ToHexString(hash) + ".jpg");
         }
         catch { return null; }
     }
@@ -985,6 +958,10 @@ internal sealed partial class EditGameWindow
 
         var prevGame = _imgGame;
         _imgGame = game;   // every Img* helper now operates on THIS game
+        // The single-game tree persists its source toggles + check-order across categories; the modal mirrors the
+        // GRID instead (below), so snapshot the tree state and restore it after — the modal must not pollute it.
+        bool prevWeb = _imgShowWeb, prevEmu = _imgShowEmu, prevSteam = _imgShowSteam;
+        var prevOrder = new List<string>(_imgSourceOrder);
         // Open the category page mirroring the GRID's enabled sources, so the same purple/blue stand-ins you see
         // in the grid are there in the modal (and the checkboxes match). A clicked stand-in cell also forces its
         // own source on (redundant — the grid had it on to show the cell — but explicit).
@@ -1030,6 +1007,8 @@ internal sealed partial class EditGameWindow
             _imgOpenWithWeb = false;
             _imgOpenWithEmu = false;
             _imgOpenWithSteam = false;
+            _imgShowWeb = prevWeb; _imgShowEmu = prevEmu; _imgShowSteam = prevSteam;
+            _imgSourceOrder.Clear(); _imgSourceOrder.AddRange(prevOrder);
             _imgGame = prevGame;
             _pages.Remove(cat);      // that page was built for another game — never cache it
         }

@@ -43,11 +43,12 @@ internal sealed partial class EditGameWindow
     private readonly object _mvLock = new();
     private readonly Dictionary<int, MvCell[]> _mvRows = new();
 
-    private bool _mvShowWeb, _mvShowEmu, _mvShowSteam;
-    private readonly List<string> _mvSourceOrder = new();                 // "web" / "emu" / "steam" — enable order = fill priority
+    private bool _mvShowWeb, _mvShowEmu, _mvShowSteam, _mvShowYt;
+    private readonly List<string> _mvSourceOrder = new();                 // "web" / "emu" / "steam" / "yt" — enable order = fill priority
     private readonly Dictionary<int, List<MetadataDb.WebImage>> _mvWebVideos = new();       // row → DB videos
     private readonly Dictionary<int, List<EmuMoviesCatalog.EmuMedia>> _mvEmuVideos = new();  // row → EmuMovies videos
     private readonly Dictionary<int, List<MetadataDb.WebImage>> _mvSteamVideos = new();      // row → Steam videos
+    private readonly Dictionary<int, List<MetadataDb.WebImage>> _mvYtVideos = new();         // row → YouTube stand-in (first downloadable)
     private Label? _mvStatus;
 
     // Thumbnails: a web-video frame is a network fetch + VLC decode — heavy — so cache (LRU) and queue (bounded,
@@ -74,9 +75,11 @@ internal sealed partial class EditGameWindow
     private static readonly Color MvWebColor = Color.FromArgb(150, 90, 200);   // purple = database stand-in
     private static readonly Color MvEmuColor = Color.FromArgb(90, 150, 220);   // blue = EmuMovies stand-in
     private static readonly Color MvSteamColor = Color.FromArgb(92, 172, 96);  // green = Steam stand-in
+    private static readonly Color MvYtColor = Color.FromArgb(210, 66, 60);     // red = YouTube stand-in
     private static Color MvStandinColor(MetadataDb.WebImage w)
-        => string.Equals(w.Origin, "emumovies", StringComparison.OrdinalIgnoreCase) ? MvEmuColor
-         : string.Equals(w.Origin, "steam", StringComparison.OrdinalIgnoreCase) ? MvSteamColor
+        => string.Equals(w.Origin, "lb-emumovies", StringComparison.OrdinalIgnoreCase) ? MvEmuColor
+         : string.Equals(w.Origin, "lb-steam", StringComparison.OrdinalIgnoreCase) ? MvSteamColor
+         : string.Equals(w.Origin, "youtube", StringComparison.OrdinalIgnoreCase) ? MvYtColor
          : MvWebColor;
 
     /// <summary>Which matrix column a web/EmuMovies video's LbType lands in (null = not placeable here).</summary>
@@ -98,7 +101,7 @@ internal sealed partial class EditGameWindow
 
         var chkWeb = new CheckBox
         {
-            Text = "Show web videos (fill the gaps)", AutoSize = true, ForeColor = Color.FromArgb(190, 150, 230),
+            Text = "Web (fill the gaps)", AutoSize = true, ForeColor = Color.FromArgb(190, 150, 230),
             BackColor = Bg, Font = new Font("Segoe UI", 8.5f), FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand,
             Location = new Point(S(4), S(10)), Checked = false, Visible = VidWebAvailable,
         };
@@ -108,7 +111,7 @@ internal sealed partial class EditGameWindow
         {
             chkEmu = new CheckBox
             {
-                Text = "Show EmuMovies videos", AutoSize = true, ForeColor = MvEmuColor,
+                Text = "EmuMovies", AutoSize = true, ForeColor = MvEmuColor,
                 BackColor = Bg, Font = new Font("Segoe UI", 8.5f), FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand,
                 Location = new Point(S(228), S(10)), Checked = false,
             };
@@ -119,23 +122,31 @@ internal sealed partial class EditGameWindow
         {
             chkSteam = new CheckBox
             {
-                Text = "Show Steam videos", AutoSize = true, ForeColor = MvSteamColor,
+                Text = "Steam", AutoSize = true, ForeColor = MvSteamColor,
                 BackColor = Bg, Font = new Font("Segoe UI", 8.5f), FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand,
                 Location = new Point(S(396), S(10)), Checked = false,
             };
         }
+        // YouTube (red) — search-driven; per game we keep the FIRST result we can actually download. Always offered.
+        var chkYt = new CheckBox
+        {
+            Text = "YouTube", AutoSize = true, ForeColor = MvYtColor,
+            BackColor = Bg, Font = new Font("Segoe UI", 8.5f), FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand,
+            Location = new Point(S(474), S(10)), Checked = false,
+        };
         var btnAll = DlgBtn("⬇  Download all missing", Color.FromArgb(78, 52, 120));
-        btnAll.AutoSize = false; btnAll.SetBounds(S(540), S(5), S(170), S(28)); btnAll.Enabled = !_readOnly;
+        btnAll.AutoSize = false; btnAll.SetBounds(S(566), S(5), S(170), S(28)); btnAll.Enabled = !_readOnly;
         btnAll.Click += (_, _) => MvDownloadAllMissing();
 
         _mvStatus = new Label
         {
             Text = $"{_editGames.Count} games × {_mvCols.Count} video types", ForeColor = SubFg, BackColor = Bg,
-            Font = new Font("Segoe UI", 8.5f), AutoSize = true, Location = new Point(S(720), S(12)),
+            Font = new Font("Segoe UI", 8.5f), AutoSize = true, Location = new Point(S(746), S(12)),
         };
         bar.Controls.Add(chkWeb);
         if (chkEmu != null) bar.Controls.Add(chkEmu);
         if (chkSteam != null) bar.Controls.Add(chkSteam);
+        bar.Controls.Add(chkYt);
         bar.Controls.Add(btnAll);
         bar.Controls.Add(_mvStatus);
 
@@ -199,6 +210,15 @@ internal sealed partial class EditGameWindow
             if (chkSteam.Checked) { _mvShowSteam = true; if (!_mvSourceOrder.Contains("steam")) _mvSourceOrder.Add("steam"); MvFillSteam(chkSteam); }
             else { _mvShowSteam = false; _mvSourceOrder.Remove("steam"); MvInvalidateAll(); MvSetStatus($"{_editGames.Count} games × {_mvCols.Count} video types"); }
         };
+        chkYt.CheckedChanged += (_, _) =>
+        {
+            if (chkYt.Checked)
+            {
+                if (!YtDlp.Available) { MessageBox.Show(this, "yt-dlp isn't installed. Open a game's Videos → YouTube and use the Download button (or the LB · Integrations → YT-DLP tab) first.", "LiteBox", MessageBoxButtons.OK, MessageBoxIcon.Information); chkYt.Checked = false; return; }
+                _mvShowYt = true; if (!_mvSourceOrder.Contains("yt")) _mvSourceOrder.Add("yt"); MvFillYt(chkYt);
+            }
+            else { _mvShowYt = false; _mvSourceOrder.Remove("yt"); MvInvalidateAll(); MvSetStatus($"{_editGames.Count} games × {_mvCols.Count} video types"); }
+        };
 
         return root;
     }
@@ -251,19 +271,28 @@ internal sealed partial class EditGameWindow
             {
                 _mvEmuVideos.TryGetValue(row, out var el);
                 vids = (el ?? new List<EmuMoviesCatalog.EmuMedia>())
-                    .Select(m => new MetadataDb.WebImage(dbId, m.Url, m.LbType, m.Region, m.Crc, "emumovies", 0, m.Ext, m.FileSize)).ToList();
+                    .Select(m => new MetadataDb.WebImage(dbId, m.Url, m.LbType, m.Region, m.Crc, "lb-emumovies", 0, m.Ext, m.FileSize)).ToList();
             }
-            else // "steam"
+            else if (src == "steam")
             {
                 _mvSteamVideos.TryGetValue(row, out var sl);
-                vids = sl ?? new();   // already WebImage (origin=steam, Type=Video)
+                // Re-stamp as "lb-steam" (a LIVE download) so it's distinct from a DB "steam" row, both here and in
+                // the ADS on download (green vs purple owned-border).
+                vids = (sl ?? new List<MetadataDb.WebImage>())
+                    .Select(w => new MetadataDb.WebImage(w.DatabaseId, w.FileName, w.Type, w.Region, w.Crc32, "lb-steam", w.Duplicate, w.FileType, w.FileSize)).ToList();
+            }
+            else // "yt"
+            {
+                _mvYtVideos.TryGetValue(row, out var yl);
+                vids = yl ?? new();   // WebImage (origin=youtube, Type=Video → Video Snap); no CRC/size → never deduped
             }
 
             foreach (var w in vids)
             {
                 if (EmuOwns(owned, w.Crc32, w.FileSize)) continue;
                 string? col = MvColumnFor(w.Type);
-                if (col == null) continue;
+                // Only the Video Snap slot is the target — the other type columns stay owned-only (still shown).
+                if (col == null || !string.Equals(col, "Video Snap", StringComparison.OrdinalIgnoreCase)) continue;
                 int ci = _mvCols.FindIndex(t => string.Equals(t, col, StringComparison.OrdinalIgnoreCase));
                 if (ci < 0) continue;
                 if (cells[ci].Count > 0 || cells[ci].Web != null) continue;   // owned or a prior source stood in
@@ -393,9 +422,21 @@ internal sealed partial class EditGameWindow
             if (!job.Web.HasValue) return null;
             var w = job.Web.Value;
             string key = "vm:" + w.Crc32 + ":" + w.FileName;
-            if (string.Equals(w.Origin, "emumovies", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(w.Origin, "youtube", StringComparison.OrdinalIgnoreCase))
+            {
+                // Use the YouTube thumbnail JPG (cheap) rather than decoding a video frame (would need yt-dlp + VLC).
+                var id = YouTubeCatalog.ExtractId(w.FileName);
+                if (id == null) return null;
+                var bytes = WebGetBytes(YtDlp.ThumbUrl(id), null);
+                if (bytes == null || bytes.Length == 0) return null;
+                using var ms = new MemoryStream(bytes);
+                using var tmp = Image.FromStream(ms);
+                double scale = Math.Min(1.0, Math.Min((double)MvThumbW / tmp.Width, (double)MvThumbH / tmp.Height));
+                return new Bitmap(tmp, new Size(Math.Max(1, (int)(tmp.Width * scale)), Math.Max(1, (int)(tmp.Height * scale))));
+            }
+            if (string.Equals(w.Origin, "lb-emumovies", StringComparison.OrdinalIgnoreCase))
                 return VideoThumbnailer.GetFromUrl(w.FileName, EmuMoviesApi.MediaReferer, key);
-            if (string.Equals(w.Origin, "steam", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(w.Origin, "lb-steam", StringComparison.OrdinalIgnoreCase))
                 return VideoThumbnailer.GetFromUrl(w.FileName, SteamApi.Referer, key);   // live: FileName is a direct mp4
             // Database video: resolve the playable URL chain (turns a Steam .m3u8.mp4 into the real .m3u8).
             foreach (var s in MediaApiBridge.ListUrls(w))
@@ -428,11 +469,22 @@ internal sealed partial class EditGameWindow
     }
 
     // ── Fill batches ──────────────────────────────────────────────────────────
+    // True when the game's Video Snap slot is already covered — owned OR filled by a higher-priority checked source.
+    // Video Snap is the ONLY slot the matrix fills, so it alone decides whether a source needs querying for a game.
+    private bool MvVideoSnapCovered(int row)
+    {
+        int vs = _mvCols.FindIndex(t => string.Equals(t, "Video Snap", StringComparison.OrdinalIgnoreCase));
+        if (vs < 0) return false;
+        var cells = MvRow(row);
+        return cells[vs].Count > 0 || cells[vs].Web.HasValue;
+    }
+
     private void MvFillWeb(CheckBox chk)
     {
         if (!VidWebAvailable) { MessageBox.Show(this, "The extended database isn't available.", "LiteBox", MessageBoxButtons.OK, MessageBoxIcon.Information); chk.Checked = false; return; }
         MvFillBatch("Loading database videos…", (row, g, dbId, ct) =>
         {
+            if (MvVideoSnapCovered(row)) { lock (_mvLock) _mvWebVideos[row] = new(); return 0; }   // already has a Video Snap → skip
             List<MetadataDb.WebImage> v; try { v = MetadataDb.VideosForGame(dbId); } catch { v = new(); }
             lock (_mvLock) _mvWebVideos[row] = v;
             return v.Count;
@@ -445,6 +497,7 @@ internal sealed partial class EditGameWindow
         if (api == null) { MessageBox.Show(this, "EmuMovies credentials aren't configured.", "LiteBox", MessageBoxButtons.OK, MessageBoxIcon.Information); chk.Checked = false; return; }
         MvFillBatch("Querying EmuMovies…", (row, g, dbId, ct) =>
         {
+            if (MvVideoSnapCovered(row)) { lock (_mvLock) _mvEmuVideos[row] = new(); return 0; }   // only query games that need a Video Snap
             var media = new List<EmuMoviesCatalog.EmuMedia>();
             string plat = Safe(() => g.Platform) ?? "";
             if (EmuMoviesCatalog.SupportsPlatform(plat))
@@ -466,6 +519,7 @@ internal sealed partial class EditGameWindow
     {
         MvFillBatch("Querying Steam…", (row, g, dbId, ct) =>
         {
+            if (MvVideoSnapCovered(row)) { lock (_mvLock) _mvSteamVideos[row] = new(); return 0; }   // only query games that need a Video Snap
             List<MetadataDb.WebImage> v = new();
             try
             {
@@ -475,6 +529,41 @@ internal sealed partial class EditGameWindow
             catch { }
             lock (_mvLock) _mvSteamVideos[row] = v;
             return v.Count;
+        });
+    }
+
+    private void MvFillYt(CheckBox chk)
+    {
+        var cfg = YtConfig.Load();
+        var cookies = cfg.CookieBrowser;
+        MvFillBatch("Querying YouTube…", (row, g, dbId, ct) =>
+        {
+            if (MvVideoSnapCovered(row)) { lock (_mvLock) _mvYtVideos[row] = new(); return 0; }   // only query games that need a Video Snap
+            var list = new List<MetadataDb.WebImage>();
+            try
+            {
+                var searches = YtExpandSearches(cfg.Searches, g);
+                string? videoUrl = Safe(() => g.VideoUrl);
+                string? gogId = Safe(() => (g as ILiteBoxGame)?.GetField("GogAppId"));
+                var results = YouTubeCatalog.ResolveInitialAsync(videoUrl, gogId, searches, 12, cookies, ct).GetAwaiter().GetResult();
+                // Keep the FIRST result we can actually download — verify one at a time and stop there (cap the
+                // checks so an all-blocked game doesn't hammer YouTube).
+                int checks = 0;
+                foreach (var r in results)
+                {
+                    if (ct.IsCancellationRequested || checks >= 8) break;
+                    checks++;
+                    var v = YtDlp.VerifyAsync(new[] { r.Id }, cookies, ct).GetAwaiter().GetResult();
+                    if (v.TryGetValue(r.Id, out var vd) && vd.Available)
+                    {
+                        list.Add(new MetadataDb.WebImage(dbId, r.WatchUrl, "Video", "", 0, "youtube", 0, "mp4", 0));
+                        break;
+                    }
+                }
+            }
+            catch { }
+            lock (_mvLock) _mvYtVideos[row] = list;
+            return list.Count;
         });
     }
 
@@ -544,10 +633,24 @@ internal sealed partial class EditGameWindow
         if (!cell.Web.HasValue) return;
         var w = cell.Web.Value;
         string title = $"{Safe(() => _editGames[row].Title)} — {_mvCols[col - 1]}";
-        List<VideoPlayerDialog.Source> srcs =
-            string.Equals(w.Origin, "emumovies", StringComparison.OrdinalIgnoreCase) ? new() { new VideoPlayerDialog.Source(w.FileName, EmuMoviesApi.MediaReferer) }
-          : string.Equals(w.Origin, "steam", StringComparison.OrdinalIgnoreCase)     ? new() { new VideoPlayerDialog.Source(w.FileName, SteamApi.Referer) }
-          : MediaApiBridge.ListUrls(w).Select(c => new VideoPlayerDialog.Source(c.Url, c.Referer)).ToList();
+        // YouTube plays in the in-app WebView2 player (or the browser), never libvlc — the FileName is a watch URL.
+        if (string.Equals(w.Origin, "youtube", StringComparison.OrdinalIgnoreCase))
+        {
+            var id = YouTubeCatalog.ExtractId(w.FileName) ?? "";
+            try { if (LbApiHost.Host.Video.YouTubePlayerDialog.TryShow(this, id, w.FileName, title)) return; } catch { }
+            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(w.FileName) { UseShellExecute = true }); } catch { }
+            return;
+        }
+        List<VideoPlayerDialog.Source> srcs;
+        if (string.Equals(w.Origin, "lb-emumovies", StringComparison.OrdinalIgnoreCase))
+            srcs = new() { new VideoPlayerDialog.Source(w.FileName, EmuMoviesApi.MediaReferer) };
+        else if (string.Equals(w.Origin, "lb-steam", StringComparison.OrdinalIgnoreCase))
+        {
+            UseWaitCursor = true;   // HLS-only trailers need a yt-dlp resolve (the movie_max.mp4 is a dead 404)
+            string? url; try { url = VidSteamPlayUrl(_editGames[row], w); } finally { UseWaitCursor = false; }
+            srcs = new() { new VideoPlayerDialog.Source(url ?? w.FileName, SteamApi.Referer) };
+        }
+        else srcs = MediaApiBridge.ListUrls(w).Select(c => new VideoPlayerDialog.Source(c.Url, c.Referer)).ToList();
         VideoPlayerDialog.PlayWeb(this, title, srcs);
     }
 
@@ -568,8 +671,8 @@ internal sealed partial class EditGameWindow
         var game = _editGames[row];
         var prevGame = _imgGame; _imgGame = game;
         // Mirror the grid's enabled sources so the game's video page opens showing the same stand-ins.
-        bool prevWeb = _vidShowWeb, prevEmu = _vidShowEmu, prevSteam = _vidShowSteam;
-        _vidShowWeb = _mvShowWeb; _vidShowEmu = _mvShowEmu; _vidShowSteam = _mvShowSteam;
+        bool prevWeb = _vidShowWeb, prevEmu = _vidShowEmu, prevSteam = _vidShowSteam, prevYt = _vidShowYt;
+        _vidShowWeb = _mvShowWeb; _vidShowEmu = _mvShowEmu; _vidShowSteam = _mvShowSteam; _vidShowYt = _mvShowYt;
         try
         {
             using var dlg = NewDialog($"{Safe(() => game.Title)} — Videos", 940, 660);
@@ -586,7 +689,7 @@ internal sealed partial class EditGameWindow
         }
         finally
         {
-            _vidShowWeb = prevWeb; _vidShowEmu = prevEmu; _vidShowSteam = prevSteam;
+            _vidShowWeb = prevWeb; _vidShowEmu = prevEmu; _vidShowSteam = prevSteam; _vidShowYt = prevYt;
             _imgGame = prevGame;
             _imgTouchedPlatforms.Add(Safe(() => game.Platform) ?? "");   // the modal may have added videos
         }
@@ -612,7 +715,12 @@ internal sealed partial class EditGameWindow
         if (jobs.Count == 0) { MessageBox.Show(this, "Nothing to download — no empty video slot has a stand-in.", "LiteBox", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
 
         int games = jobs.Select(j => j.row).Distinct().Count();
-        if (MessageBox.Show(this, $"Download {jobs.Count} video(s) across {games} game(s)?\n\nSteam HLS trailers can't be saved (stream-only) and will be skipped.",
+        int hls = jobs.Count(j => VidIsHlsRow(j.web));
+        // With yt-dlp present, Steam HLS trailers ARE saved (via yt-dlp); only warn when it's missing.
+        string note = (hls > 0 && !YtDlp.Available)
+            ? $"\n\n{hls} of these are Steam HLS trailers — they'll be SKIPPED (install yt-dlp to save them)."
+            : "";
+        if (MessageBox.Show(this, $"Download {jobs.Count} video(s) across {games} game(s)?" + note,
                 "Download all missing", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
 
         using var dlg = NewDialog("Downloading videos…", 420, 150);
@@ -659,9 +767,34 @@ internal sealed partial class EditGameWindow
             int dbId = Safe(() => g.LaunchBoxDbId) ?? -1;
             if (string.IsNullOrEmpty(plat) || string.IsNullOrEmpty(idStr)) return false;
 
+            // YouTube: yt-dlp writes the file itself (FileName is the watch URL). Uses the configured quality/cookies.
+            if (string.Equals(w.Origin, "youtube", StringComparison.OrdinalIgnoreCase))
+            {
+                string? ydir = MediaResolver.VideoTypeFolder(plat, targetType);
+                if (string.IsNullOrEmpty(ydir)) return false;
+                Directory.CreateDirectory(ydir);
+                string ysani = MediaResolver.Sanitize(Safe(() => g.Title) ?? "");
+                string yprefix = ImgPrefix(plat, idStr, ysani, null, ydir);
+                int ynum = ImgMaxNum(ydir, yprefix) + 1;
+                string outNoExt = Path.Combine(ydir, $"{yprefix}-{ynum:D2}");
+                var cfg = YtConfig.Load();
+                var outcome = YtDlp.DownloadAsync(w.FileName, cfg.Quality, outNoExt, cfg.CookieBrowser).GetAwaiter().GetResult();
+                if (outcome.Path == null || !File.Exists(outcome.Path)) return false;
+                long yfs = 0; try { yfs = new FileInfo(outcome.Path).Length; } catch { }
+                ImageAdsWriter.WriteForDownload(outcome.Path, new MetadataDb.WebImage(dbId, w.FileName, "Video", "", 0, "youtube", 0, "mp4", yfs), dbId, plat);
+                return true;
+            }
+
+            // A Steam HLS trailer (".m3u8") can't be saved as bytes — hand it to yt-dlp (manifest + ffmpeg merge).
+            if (VidIsHlsRow(w)) return VidDownloadHls(g, w, targetType);
+
             byte[]? bytes;
-            if (string.Equals(w.Origin, "emumovies", StringComparison.OrdinalIgnoreCase)) bytes = EmuFetchBytes(w.FileName);
-            else if (string.Equals(w.Origin, "steam", StringComparison.OrdinalIgnoreCase)) bytes = WebGetBytes(w.FileName, SteamApi.Referer);   // live Steam = direct mp4
+            if (string.Equals(w.Origin, "lb-emumovies", StringComparison.OrdinalIgnoreCase)) bytes = EmuFetchBytes(w.FileName);
+            else if (string.Equals(w.Origin, "lb-steam", StringComparison.OrdinalIgnoreCase))
+            {
+                bytes = WebGetBytes(w.FileName, SteamApi.Referer);   // live Steam = direct mp4 (older trailers)
+                if (bytes == null || bytes.Length == 0) return VidDownloadSteamHls(g, w, targetType);   // HLS-only → yt-dlp master
+            }
             else bytes = MediaApiBridge.FetchBytes(w, plat);   // database video via the wizard: HLS-only Steam → null
 
             if (bytes == null || bytes.Length == 0) return false;

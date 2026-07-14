@@ -65,50 +65,23 @@ internal sealed partial class EditGameWindow
         add.Click += (_, _) => VidAdd(null);
         bar.Controls.Add(add);
 
-        // "Show web videos" — gated on the SAME condition as the images: the Extended Database module is Active
-        // AND the extended DB is downloaded. That DB is where video rows live (LaunchBox's own Metadata.db has
-        // none), and its per-origin fetcher is the only thing that can retrieve a screenscraper/steam URL.
+        // Source toggles — filled-when-on chips (see SourceChip), laid out left-to-right after the Add button.
+        // Purple = the offline database (where video rows live; LaunchBox's own Metadata.db has none), blue =
+        // EmuMovies (live, user's account), green = Steam (live, appid games), red = YouTube (yt-dlp, any game).
+        int chipX = S(134);
+        void AddChip(CheckBox c, int w) { c.SetBounds(chipX, S(8), w, S(26)); bar.Controls.Add(c); chipX += w + S(10); }
+
         if (VidWebAvailable)
-        {
-            var web = new CheckBox
-            {
-                Text = "Show web videos (database)", AutoSize = false, ForeColor = Color.FromArgb(190, 150, 230),
-                BackColor = Bg, Font = new Font("Segoe UI", 8.5f), FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand,
-                Checked = _vidShowWeb,
-            };
-            web.SetBounds(S(134), S(8), S(210), S(26));
-            web.CheckedChanged += (_, _) => { _vidShowWeb = web.Checked; VidSourceToggle("web", web.Checked); VidPopulate(host, null); };
-            bar.Controls.Add(web);
-        }
-
-        // "Show EmuMovies videos" (blue) — a SEPARATE source from the database (purple): queries EmuMovies LIVE
-        // with the user's own account. Only when credentials are configured AND this platform maps to EmuMovies.
+            AddChip(SourceChip("Web (database)", WebPurple, _vidShowWeb, on =>
+                { _vidShowWeb = on; VidSourceToggle("web", on); VidPopulate(host, null); }), S(158));
         if (VidEmuAvailable(ImgGame))
-        {
-            var emu = new CheckBox
-            {
-                Text = "Show EmuMovies videos", AutoSize = false, ForeColor = EmuBlue,
-                BackColor = Bg, Font = new Font("Segoe UI", 8.5f), FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand,
-                Checked = _vidShowEmu,
-            };
-            emu.SetBounds(S(348), S(8), S(190), S(26));
-            emu.CheckedChanged += (_, _) => { _vidShowEmu = emu.Checked; VidSourceToggle("emu", emu.Checked); VidPopulate(host, null); };
-            bar.Controls.Add(emu);
-        }
-
-        // "Show Steam videos" (green) — live, only for a game with a Steam appid.
+            AddChip(SourceChip("EmuMovies", EmuBlue, _vidShowEmu, on =>
+                { _vidShowEmu = on; VidSourceToggle("emu", on); VidPopulate(host, null); }), S(124));
         if (VidSteamAvailable(ImgGame))
-        {
-            var steam = new CheckBox
-            {
-                Text = "Show Steam videos", AutoSize = false, ForeColor = SteamGreen,
-                BackColor = Bg, Font = new Font("Segoe UI", 8.5f), FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand,
-                Checked = _vidShowSteam,
-            };
-            steam.SetBounds(S(546), S(8), S(170), S(26));
-            steam.CheckedChanged += (_, _) => { _vidShowSteam = steam.Checked; VidSourceToggle("steam", steam.Checked); VidPopulate(host, null); };
-            bar.Controls.Add(steam);
-        }
+            AddChip(SourceChip("Steam", SteamGreen, _vidShowSteam, on =>
+                { _vidShowSteam = on; VidSourceToggle("steam", on); VidPopulate(host, null); }), S(100));
+        AddChip(SourceChip("YouTube", YtRed, _vidShowYt, on =>
+            { _vidShowYt = on; VidPopulate(host, null); }), S(112));
 
         if (!VlcService.Available)
         {
@@ -116,7 +89,7 @@ internal sealed partial class EditGameWindow
             {
                 Text = "⚠  libvlc isn't installed — videos are listed, but without thumbnails.",
                 ForeColor = Color.FromArgb(235, 180, 100), BackColor = Bg, AutoSize = true,
-                Font = new Font("Segoe UI", 8.5f), Location = new Point(S(724), S(12)),
+                Font = new Font("Segoe UI", 8.5f), Location = new Point(S(912), S(12)),
             };
             bar.Controls.Add(warn);
         }
@@ -127,8 +100,11 @@ internal sealed partial class EditGameWindow
         return container;
     }
 
+    private Panel? _vidHost;   // the video scroll host currently on screen (tree page OR the MvOpenCell modal)
+
     private void VidPopulate(Panel host, string? onlyType)
     {
+        _vidHost = host;   // remember it so async completions re-populate THIS host (the modal, when open), not the tree page
         foreach (Control c in host.Controls) VidDetachPics(c);   // the frames belong to _vidThumbs — detach, don't dispose
         host.Controls.Clear();
 
@@ -139,7 +115,7 @@ internal sealed partial class EditGameWindow
         bool emu = _vidShowEmu && VidEmuAvailable(g);
         bool steam = _vidShowSteam && VidSteamAvailable(g);
 
-        if (!all.Any(v => types.Contains(v.Type, StringComparer.OrdinalIgnoreCase)) && !web && !emu && !steam)
+        if (!all.Any(v => types.Contains(v.Type, StringComparer.OrdinalIgnoreCase)) && !web && !emu && !steam && !_vidShowYt)
         {
             host.Controls.Add(new Label
             {
@@ -181,6 +157,7 @@ internal sealed partial class EditGameWindow
         }
 
         VidAppendMergedWeb(g, all, inner, ref y);
+        if (_vidShowYt) VidAppendYouTube(g, inner, ref y);
     }
 
     // Track the order the user turns web video sources on, so the merged view interleaves them by check-order
@@ -194,6 +171,13 @@ internal sealed partial class EditGameWindow
 
     private void VidRebuildIfCurrent()
     {
+        // Re-populate the ACTIVE video host — the MvOpenCell modal's host when one is open, else the tree page's.
+        // (ShowPage("Videos") rebuilt the TREE page, which in multi-select is the MATRIX, so a modal's async fetch
+        // completion never refreshed the modal — it stayed on "Querying…".)
+        if (_vidHost != null && !_vidHost.IsDisposed && _vidHost.IsHandleCreated)
+        {
+            try { VidPopulate(_vidHost, null); return; } catch { }
+        }
         if (_tree.SelectedNode?.Tag?.ToString() == "Videos") { _pages.Remove("Videos"); ShowPage("Videos"); }
     }
 
@@ -352,6 +336,25 @@ internal sealed partial class EditGameWindow
         });
     }
 
+    // The ADS :info origin of an owned media file (null when never stamped / no ExtendDB reader).
+    private static string? VidAdsOrigin(string path)
+    {
+        try { return ImageInfoBridge.ReadAny(path) is ImageInfo i ? i.Origin : null; }
+        catch { return null; }
+    }
+
+    // Border colour by the SOURCE we got the file from: live Steam / EmuMovies downloads are stamped "lb-steam" /
+    // "lb-emumovies" (distinct from the DB's own "steam" / "emumovies" copies, which — like every other DB origin
+    // — read as the database). null = never stamped (hand-added) → no border.
+    private static Color? VidSourceColor(string? origin)
+    {
+        if (string.IsNullOrEmpty(origin)) return null;
+        if (origin.Equals("lb-steam", StringComparison.OrdinalIgnoreCase)) return SteamGreen;
+        if (origin.Equals("lb-emumovies", StringComparison.OrdinalIgnoreCase)) return EmuBlue;
+        if (origin.Equals("youtube", StringComparison.OrdinalIgnoreCase)) return YtRed;
+        return Color.FromArgb(150, 90, 200);   // any web-database origin → purple
+    }
+
     private Panel VidCell(VidFile v)
     {
         var cell = new Panel { Size = new Size(VidCellW, VidCellH), BackColor = Bg };
@@ -370,6 +373,15 @@ internal sealed partial class EditGameWindow
             if (e.Button == MouseButtons.Left) VidPlay(v.Path);   // left = play in the default player
         };
         cell.Controls.Add(pic);
+
+        // DOTTED source-coloured border on OWNED videos (green = your Steam · blue = EmuMovies · red = YouTube ·
+        // purple = database), so you see where each came from. Dotted (vs the SOLID stand-in borders) = owned.
+        if (VidSourceColor(VidAdsOrigin(v.Path)) is Color srcColor)
+            cell.Paint += (_, e) =>
+            {
+                using var pen = new Pen(srcColor, S(2)) { DashStyle = System.Drawing.Drawing2D.DashStyle.Dot };
+                e.Graphics.DrawRectangle(pen, S(2), S(2), VidCellW - S(8), VidThumbH + S(4));
+            };
 
         var name = new Label
         {
@@ -452,6 +464,14 @@ internal sealed partial class EditGameWindow
         }
         m.Items.Add(move);
 
+        var copy = new ToolStripMenuItem("Copy To Type");
+        foreach (var t in VidTypes()) { string tt = t; copy.DropDownItems.Add(new ToolStripMenuItem(tt).WithClick(() => VidCopyType(v, tt))); }
+        m.Items.Add(copy);
+
+        m.Items.Add(new ToolStripSeparator());
+        m.Items.Add(new ToolStripMenuItem("🗑  Delete all except this").WithClick(() => VidDeleteAllExcept(v)));
+        m.Items.Add(new ToolStripMenuItem("Set Number…").WithClick(() => VidSetNumber(v)));
+        m.Items.Add(new ToolStripMenuItem(v.HasGuid ? "Remove GUID naming" : "Enable GUID naming").WithClick(() => VidToggleGuid(v)));
         m.Items.Add(new ToolStripSeparator());
         m.Items.Add(new ToolStripMenuItem("ℹ  Info").WithClick(() => VidInfo(v)));
         m.Items.Add(new ToolStripMenuItem("📂  Show in Explorer").WithClick(() => VidReveal(v.Path)));
@@ -522,17 +542,20 @@ internal sealed partial class EditGameWindow
         if (string.IsNullOrEmpty(plat) || string.IsNullOrEmpty(idStr))
         { MessageBox.Show(this, "This game has no platform / id.", "LiteBox", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
 
-        string filter = "Videos (" + string.Join(";", MediaResolver.VideoExtensions.Select(e => "*" + e)) + ")|"
-                      + string.Join(";", MediaResolver.VideoExtensions.Select(e => "*" + e));
-        using var ofd = new OpenFileDialog { Title = "Add video", Filter = filter, CheckFileExists = true };
-        if (ofd.ShowDialog(this) != DialogResult.OK) return;
-
+        // Pick the type FIRST (like the images Add), then the file(s).
         string? type = presetType ?? VidPickType("Video Snap");
         if (type == null) return;
 
+        string filter = "Videos (" + string.Join(";", MediaResolver.VideoExtensions.Select(e => "*" + e)) + ")|"
+                      + string.Join(";", MediaResolver.VideoExtensions.Select(e => "*" + e));
+        using var ofd = new OpenFileDialog { Title = "Add video(s)", Filter = filter, CheckFileExists = true, Multiselect = true };
+        if (ofd.ShowDialog(this) != DialogResult.OK) return;
+
         // Copied, never referenced — like images: LaunchBox finds media by CONVENTION (folder + name), so a
         // file left outside the Videos tree would simply never be seen.
-        if (VidPlace(g, ofd.FileName, type, move: false)) VidAfterOp(plat);
+        int ok = 0;
+        foreach (var file in ofd.FileNames) if (VidPlace(g, file, type, move: false)) ok++;
+        if (ok > 0) VidAfterOp(plat);
     }
 
     private void VidTransfer(VidFile v, string targetType)
@@ -581,6 +604,97 @@ internal sealed partial class EditGameWindow
         VidAfterOp(Safe(() => ImgGame.Platform) ?? "");
     }
 
+    private void VidCopyType(VidFile v, string targetType)
+    {
+        if (_readOnly) return;
+        var g = ImgGame;
+        if (VidPlace(g, v.Path, targetType, move: false)) VidAfterOp(Safe(() => g.Platform) ?? "");
+    }
+
+    private void VidDeleteAllExcept(VidFile keep)
+    {
+        if (_readOnly) return;
+        var victims = VidScan(ImgGame).Where(f => !string.Equals(f.Path, keep.Path, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (victims.Count == 0) return;
+        if (MessageBox.Show(this, $"This will delete {victims.Count} video(s).\n\nThis cannot be undone.",
+                "Delete all except this", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+        int fail = 0;
+        foreach (var v in victims) { try { File.Delete(v.Path); _vidThumbs.Remove(v.Path); } catch { fail++; } }
+        VidAfterOp(Safe(() => ImgGame.Platform) ?? "");
+        if (fail > 0) MessageBox.Show(this, $"{fail} file(s) couldn't be deleted (locked / in use).", "LiteBox", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+    }
+
+    private void VidToggleGuid(VidFile v)
+    {
+        if (_readOnly) return;
+        var g = ImgGame;
+        string idStr = Safe(() => g.Id) ?? "";
+        string sani = MediaResolver.Sanitize(Safe(() => g.Title) ?? "");
+        string dir = Path.GetDirectoryName(v.Path) ?? "";
+        string ext = Path.GetExtension(v.Path);
+        try
+        {
+            string prefix = v.HasGuid ? sani : $"{sani}.{idStr}";   // toggled form
+            int num = ImgMaxNum(dir, prefix) + 1;
+            string target = Path.Combine(dir, $"{prefix}-{num:D2}{ext}");
+            File.Move(v.Path, target, overwrite: false);
+            _vidThumbs.Remove(v.Path);
+            VidAfterOp(Safe(() => g.Platform) ?? "");
+        }
+        catch (Exception ex) { MessageBox.Show(this, "Toggle GUID failed:\n" + ex.Message, "LiteBox", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+    }
+
+    // Drop the in-memory thumbnails for every file in a directory — the frames are keyed by PATH, so after a
+    // rename/renumber cascade a path now points at a DIFFERENT video and its cached frame is stale. (The disk
+    // cache is keyed by path+size+mtime, so a re-decode gets the right frame.)
+    private void VidForgetThumbsIn(string dir)
+    {
+        if (string.IsNullOrEmpty(dir)) return;
+        var stale = _vidThumbs.Keys.Where(k => string.Equals(Path.GetDirectoryName(k) ?? "", dir, StringComparison.OrdinalIgnoreCase)).ToList();
+        foreach (var k in stale) _vidThumbs.Remove(k);
+    }
+
+    private void VidSetNumber(VidFile v)
+    {
+        if (_readOnly) return;
+        int? target = ImgPromptNumber(v.NumVal);
+        if (target == null) return;
+        var g = ImgGame;
+        string idStr = Safe(() => g.Id) ?? "";
+        string sani = MediaResolver.Sanitize(Safe(() => g.Title) ?? "");
+        string dir = Path.GetDirectoryName(v.Path) ?? "";
+        string ext = Path.GetExtension(v.Path);
+        string prefix = v.HasGuid ? $"{sani}.{idStr}" : sani;
+        string prefixLower = prefix.ToLowerInvariant();
+        try
+        {
+            string temp = v.Path + ".litebox-tmp";
+            File.Move(v.Path, temp, overwrite: true);
+            // Cascade: bump every file whose number >= target, highest first (avoid clobber).
+            var toShift = new List<(string path, int num)>();
+            foreach (var f in Directory.EnumerateFiles(dir))
+            {
+                string name = Path.GetFileNameWithoutExtension(f).ToLowerInvariant();
+                if (!name.StartsWith(prefixLower)) continue;
+                int d = name.LastIndexOf('-'); if (d < 0 || d >= name.Length - 1) continue;
+                if (int.TryParse(name.Substring(d + 1), out int n) && n >= target.Value) toShift.Add((f, n));
+            }
+            toShift.Sort((a, b) => b.num.CompareTo(a.num));
+            foreach (var (path, num) in toShift)
+            {
+                string fe = Path.GetExtension(path);
+                string on = Path.GetFileNameWithoutExtension(path);
+                int d = on.LastIndexOf('-');
+                string np = Path.Combine(dir, $"{on.Substring(0, d)}-{(num + 1):D2}{fe}");
+                if (path != np) File.Move(path, np, overwrite: true);
+            }
+            File.Move(temp, Path.Combine(dir, $"{prefix}-{target:D2}{ext}"), overwrite: true);
+            VidForgetThumbsIn(dir);   // the cascade renamed several files → the path-keyed memory thumbs are now stale
+            VidAfterOp(Safe(() => g.Platform) ?? "");
+        }
+        catch (Exception ex) { MessageBox.Show(this, "Set number failed:\n" + ex.Message, "LiteBox", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+    }
+
     private string? VidPickType(string def)
     {
         using var f = NewDialog("Video type", 420, 160);
@@ -603,6 +717,13 @@ internal sealed partial class EditGameWindow
     {
         if (!string.IsNullOrEmpty(plat)) _imgTouchedPlatforms.Add(plat);   // same deferred cache rebuild as images
 
+        // Refresh the ACTIVE video host — the MvOpenCell modal when one is open (so a download/delete shows at once),
+        // else the tree page. ShowPage alone rebuilt the tree page, which in multi-select is the matrix, so a
+        // download/delete inside the modal never updated the modal's local-file list.
+        if (_vidHost != null && !_vidHost.IsDisposed && _vidHost.IsHandleCreated)
+        {
+            try { VidPopulate(_vidHost, null); return; } catch { }
+        }
         _pages.Remove("Videos");
         if (_tree.SelectedNode?.Tag?.ToString() == "Videos") ShowPage("Videos");
     }
@@ -688,11 +809,45 @@ internal sealed partial class EditGameWindow
         return cell;
     }
 
-    /// <summary>A Steam row whose FileName is a FAKE mp4: "…/movie480.m3u8.mp4". The real resource is the HLS
-    /// manifest under the stripped name — playable, but not storable as bytes (see the header).</summary>
+    /// <summary>A Steam row whose FileName is a FAKE mp4: "…/hls_264_master.m3u8.mp4". The real resource is the
+    /// HLS manifest under the stripped name — a plain GET can't save it, but yt-dlp CAN (VidDownloadHls).</summary>
     private static bool VidIsHlsRow(MetadataDb.WebImage w)
         => (w.FileName ?? "").EndsWith(".m3u8.mp4", StringComparison.OrdinalIgnoreCase)
         || (w.FileName ?? "").EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The real HLS manifest URL — strips the fake trailing ".mp4" that Steam rows carry.</summary>
+    private static string VidHlsUrl(MetadataDb.WebImage w)
+    {
+        var fn = w.FileName ?? "";
+        return fn.EndsWith(".m3u8.mp4", StringComparison.OrdinalIgnoreCase) ? fn.Substring(0, fn.Length - 4) : fn;
+    }
+
+    /// <summary>Save an HLS video (a Steam .m3u8 trailer) via yt-dlp — it downloads the manifest and merges the
+    /// streams with ffmpeg. Returns true on success. yt-dlp must be installed. Writes the ExtendDB ADS.</summary>
+    private bool VidDownloadHls(IGame g, MetadataDb.WebImage w, string targetType)
+    {
+        if (!YtDlp.Available) return false;
+        try
+        {
+            string plat = Safe(() => g.Platform) ?? "";
+            string idStr = Safe(() => g.Id) ?? "";
+            int dbId = Safe(() => g.LaunchBoxDbId) ?? -1;
+            if (string.IsNullOrEmpty(plat) || string.IsNullOrEmpty(idStr)) return false;
+            string? dir = MediaResolver.VideoTypeFolder(plat, targetType);
+            if (string.IsNullOrEmpty(dir)) return false;
+            Directory.CreateDirectory(dir);
+            string sani = MediaResolver.Sanitize(Safe(() => g.Title) ?? "");
+            string prefix = ImgPrefix(plat, idStr, sani, null, dir);
+            int num = ImgMaxNum(dir, prefix) + 1;
+            string outNoExt = Path.Combine(dir, $"{prefix}-{num:D2}");
+            var outcome = YtDlp.DownloadAsync(VidHlsUrl(w), "Best", outNoExt, YtDlp.CookieBrowser.None).GetAwaiter().GetResult();
+            if (outcome.Path == null || !File.Exists(outcome.Path)) return false;
+            long fs = 0; try { fs = new FileInfo(outcome.Path).Length; } catch { }
+            ImageAdsWriter.WriteForDownload(outcome.Path, new MetadataDb.WebImage(dbId, w.FileName, w.Type, w.Region, w.Crc32, w.Origin, w.Duplicate, "mp4", fs), dbId, plat);
+            return true;
+        }
+        catch { return false; }
+    }
 
     private ContextMenuStrip VidWebMenu(MetadataDb.WebImage w)
     {
@@ -755,6 +910,19 @@ internal sealed partial class EditGameWindow
         int dbId = Safe(() => g.LaunchBoxDbId) ?? -1;
         if (string.IsNullOrEmpty(plat) || string.IsNullOrEmpty(idStr)) return;
 
+        // A Steam HLS trailer (".m3u8") has no plain bytes — hand it to yt-dlp (manifest + ffmpeg merge).
+        if (VidIsHlsRow(w))
+        {
+            UseWaitCursor = true;
+            bool okHls; try { okHls = VidDownloadHls(g, w, targetType); } finally { UseWaitCursor = false; }
+            if (okHls) VidAfterOp(plat);
+            else MessageBox.Show(this, YtDlp.Available
+                    ? "The HLS download failed."
+                    : "This is an HLS stream (a Steam trailer). Install yt-dlp (a game's YouTube options) to save it.",
+                "LiteBox", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
         byte[]? bytes = null;
         UseWaitCursor = true;
         try { bytes = MediaApiBridge.FetchBytes(w, plat); }
@@ -767,10 +935,7 @@ internal sealed partial class EditGameWindow
 
         if (bytes == null || bytes.Length == 0 || manifest)
         {
-            MessageBox.Show(this,
-                VidIsHlsRow(w)
-                    ? "This one is an HLS stream (a Steam trailer stored as a fake .mp4).\n\nIt plays fine — click the tile — but there are no plain video bytes to save, and the database mirror doesn't have a copy either."
-                    : "The download failed: no source in the chain returned this video.",
+            MessageBox.Show(this, "The download failed: no source in the chain returned this video.",
                 "LiteBox", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
@@ -991,8 +1156,9 @@ internal sealed partial class EditGameWindow
             string target = Path.Combine(dir, $"{prefix}-{num:D2}.{ext.TrimStart('.')}");
             File.WriteAllBytes(target, bytes);
 
-            // ADS in ExtendDB format (origin=emumovies, the API's CRC + file size).
-            var wi = new MetadataDb.WebImage(dbId, m.Url, m.LbType, m.Region, m.Crc, "emumovies", 0, m.Ext, m.FileSize);
+            // ADS in ExtendDB format — origin "lb-emumovies": a LIVE EmuMovies download, distinct from the DB's
+            // own "emumovies" rows so the owned-video border can tell them apart (blue vs purple).
+            var wi = new MetadataDb.WebImage(dbId, m.Url, m.LbType, m.Region, m.Crc, "lb-emumovies", 0, m.Ext, m.FileSize);
             ImageAdsWriter.WriteForDownload(target, wi, dbId, plat);
             VidAfterOp(plat);
         }
@@ -1063,8 +1229,75 @@ internal sealed partial class EditGameWindow
         });
     }
 
+    // ── Steam trailer: yt-dlp fallback for HLS-only trailers ──────────────────
+    // Newer Steam trailers are HLS-only: the reconstructed movie_max.mp4 is a dead 404, so libvlc can't open it.
+    // yt-dlp's Steam extractor still resolves them; we play/download the HLS MASTER manifest through it. The direct
+    // mp4 stays the fast path for older trailers that still have it.
+    private string? VidSteamAppId(IGame g)
+    {
+        try { return SteamCatalog.AppIdOf(Safe(() => g.ApplicationPath) ?? "", Safe(() => g.LaunchBoxDbId) ?? -1); }
+        catch { return null; }
+    }
+
+    private static bool VidUrlOk(string url)
+    {
+        try
+        {
+            using var h = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(6) };
+            using var req = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Head, url);
+            if (Uri.TryCreate(SteamApi.Referer, UriKind.Absolute, out var r)) req.Headers.Referrer = r;
+            using var resp = h.Send(req);
+            return resp.IsSuccessStatusCode;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>The playable URL for a Steam trailer: the direct mp4 when it still exists, else the yt-dlp-resolved
+    /// HLS master (video+audio), else null.</summary>
+    private string? VidSteamPlayUrl(IGame g, MetadataDb.WebImage w)
+    {
+        if (VidUrlOk(w.FileName)) return w.FileName;                 // older trailers still have the direct mp4
+        var appid = VidSteamAppId(g);
+        if (appid != null && YtDlp.Available)
+            try { return YtDlp.SteamTrailerMasterAsync(appid).GetAwaiter().GetResult(); } catch { }
+        return null;
+    }
+
+    /// <summary>Download a Steam trailer via yt-dlp (the HLS master) when there are no direct bytes. True on success.</summary>
+    private bool VidDownloadSteamHls(IGame g, MetadataDb.WebImage w, string targetType)
+    {
+        var appid = VidSteamAppId(g);
+        if (appid == null || !YtDlp.Available) return false;
+        try
+        {
+            string plat = Safe(() => g.Platform) ?? "";
+            string idStr = Safe(() => g.Id) ?? "";
+            int dbId = Safe(() => g.LaunchBoxDbId) ?? -1;
+            if (string.IsNullOrEmpty(plat) || string.IsNullOrEmpty(idStr)) return false;
+            string? master = YtDlp.SteamTrailerMasterAsync(appid).GetAwaiter().GetResult();
+            if (master == null) return false;
+            string? dir = MediaResolver.VideoTypeFolder(plat, targetType);
+            if (string.IsNullOrEmpty(dir)) return false;
+            Directory.CreateDirectory(dir);
+            string sani = MediaResolver.Sanitize(Safe(() => g.Title) ?? "");
+            string prefix = ImgPrefix(plat, idStr, sani, null, dir);
+            int num = ImgMaxNum(dir, prefix) + 1;
+            string outNoExt = Path.Combine(dir, $"{prefix}-{num:D2}");
+            var outcome = YtDlp.DownloadAsync(master, "Best", outNoExt, YtDlp.CookieBrowser.None).GetAwaiter().GetResult();
+            if (outcome.Path == null || !File.Exists(outcome.Path)) return false;
+            long fs = 0; try { fs = new FileInfo(outcome.Path).Length; } catch { }
+            ImageAdsWriter.WriteForDownload(outcome.Path, new MetadataDb.WebImage(dbId, w.FileName, w.Type, w.Region, w.Crc32, "lb-steam", w.Duplicate, "mp4", fs), dbId, plat);
+            return true;
+        }
+        catch { return false; }
+    }
+
     private void VidPlaySteam(MetadataDb.WebImage w)
-        => VideoPlayerDialog.PlayWeb(this, "Steam trailer", new[] { new VideoPlayerDialog.Source(w.FileName, SteamApi.Referer) });
+    {
+        UseWaitCursor = true;
+        string? url; try { url = VidSteamPlayUrl(ImgGame, w); } finally { UseWaitCursor = false; }
+        VideoPlayerDialog.PlayWeb(this, "Steam trailer", new[] { new VideoPlayerDialog.Source(url ?? w.FileName, SteamApi.Referer) });
+    }
 
     private void VidDownloadSteam(MetadataDb.WebImage w, string targetType)
     {
@@ -1078,7 +1311,16 @@ internal sealed partial class EditGameWindow
         byte[]? bytes = null;
         UseWaitCursor = true;
         try { bytes = WebGetBytes(w.FileName, SteamApi.Referer); } catch { } finally { UseWaitCursor = false; }
-        if (bytes == null || bytes.Length == 0) { MessageBox.Show(this, "The Steam download failed.", "LiteBox", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+
+        // Direct mp4 gone (newer HLS-only trailer) → let yt-dlp fetch the HLS master.
+        if (bytes == null || bytes.Length == 0)
+        {
+            UseWaitCursor = true;
+            bool okHls; try { okHls = VidDownloadSteamHls(g, w, targetType); } finally { UseWaitCursor = false; }
+            if (okHls) { VidAfterOp(plat); return; }
+            MessageBox.Show(this, "The Steam download failed.", "LiteBox", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
 
         try
         {
@@ -1091,7 +1333,8 @@ internal sealed partial class EditGameWindow
             int num = ImgMaxNum(dir, prefix) + 1;
             string target = Path.Combine(dir, $"{prefix}-{num:D2}.{ext.TrimStart('.')}");
             File.WriteAllBytes(target, bytes);
-            ImageAdsWriter.WriteForDownload(target, w, dbId, plat);   // origin=steam
+            // origin "lb-steam": a LIVE Steam download, distinct from the DB's "steam" rows (green vs purple border).
+            ImageAdsWriter.WriteForDownload(target, new MetadataDb.WebImage(dbId, w.FileName, w.Type, w.Region, w.Crc32, "lb-steam", w.Duplicate, w.FileType, w.FileSize), dbId, plat);
             VidAfterOp(plat);
         }
         catch (Exception ex) { MessageBox.Show(this, "Download failed:\n" + ex.Message, "LiteBox", MessageBoxButtons.OK, MessageBoxIcon.Error); }

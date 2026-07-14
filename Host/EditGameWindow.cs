@@ -1028,6 +1028,7 @@ internal sealed partial class EditGameWindow : Form   // Game Saves page lives i
         ReloadNamesControllersIfBuilt();   // Alternate Names / Controller Support too
         ReloadLaunchingIfBuilt();          // the Launching branch too
         ReloadImagesIfBuilt();             // Media → Images page too
+        ReloadVideosIfBuilt();             // Media → Videos page too (rebuild for the new game; reset YouTube)
         UpdateChrome();
     }
 

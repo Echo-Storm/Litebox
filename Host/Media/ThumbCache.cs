@@ -61,10 +61,23 @@ internal static class ThumbCache
     public static void Init(string lbRoot)
         => _dir = Path.Combine(lbRoot, "Plugins", "ExtendDB", "cache", "thumbs");
 
-    /// <summary>The shared thumbs directory, created on demand. Video thumbnails (see
-    /// Host.Video.VideoThumbnailer) land here too: same folder, same 360 px / JPEG convention — only the KEY
-    /// differs (a video also keys on mtime, since replacing one must re-extract the frame).</summary>
+    /// <summary>The shared thumbs directory (ROOT), created on demand. Holds the game's OWN image thumbnails,
+    /// byte-identical with ExtendDB's cache. Video frames and web-image previews live in dedicated SUB-folders
+    /// (<see cref="VideoFolder"/> / <see cref="WebImgFolder"/>) so the root stays purely the ExtendDB-shared set.</summary>
     public static string Folder => Dir;
+
+    /// <summary>Sub-folder for VIDEO thumbnails (local frames + web-video frames). See Host.Video.VideoThumbnailer.</summary>
+    public static string VideoFolder => Sub("video");
+
+    /// <summary>Sub-folder for WEB-IMAGE preview thumbnails (database / EmuMovies / Steam stand-ins in the editor).</summary>
+    public static string WebImgFolder => Sub("webimg");
+
+    private static string Sub(string name)
+    {
+        var d = Path.Combine(Dir, name);
+        try { Directory.CreateDirectory(d); } catch { }
+        return d;
+    }
 
     private static string Dir
     {

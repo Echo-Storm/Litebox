@@ -126,6 +126,20 @@
       <HintPath>$(WinRtRefDir)\WinRT.Runtime.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!-- WebView2 (YouTube mini-player). LaunchBox 13.28 ships it in Core (Core + WinForms managed wrappers +
+         WebView2Loader native); 13.27 does NOT. Compile-only (Private=false) against the net10 Core copies — the
+         BOTH-TFM point at Lb10Root because only 13.28 has them. Its PKT (2a8ab48044d2601e) isn't in Program.cs's
+         framework skip-list, so the runtime resolver loads it from Core on 13.28; on 13.27 it's absent and
+         YouTubePlayerDialog.IsAvailable() catches the load failure → falls back to the system browser. Nothing new
+         is deployed (same version-agnostic pattern as the SDK / SQLite / WinRT refs above). -->
+    <Reference Include="Microsoft.Web.WebView2.Core">
+      <HintPath>$(Lb10Root)\Core\Microsoft.Web.WebView2.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.Web.WebView2.WinForms">
+      <HintPath>$(Lb10Root)\Core\Microsoft.Web.WebView2.WinForms.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
   <ItemGroup>

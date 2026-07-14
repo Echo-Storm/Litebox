@@ -13,8 +13,8 @@
 //
 // Extraction is serialized (one at a time): the callbacks share the buffer, and at ~42 ms a frame there is
 // nothing to gain from racing them. Results are cached on disk, so a video is only ever decoded once — in the
-// SAME folder as every other LiteBox/ExtendDB thumbnail (ThumbCache.Folder), at the same 360 px / JPEG
-// convention; see CachePath for why the key still has to be video-specific.
+// dedicated VIDEO sub-folder (ThumbCache.VideoFolder = <LB>\Plugins\ExtendDB\cache\thumbs\video), at the same
+// 360 px / JPEG convention; see CachePath for why the key still has to be video-specific.
 
 #nullable enable
 
@@ -222,8 +222,8 @@ internal static class VideoThumbnailer
     }
 
     // ── Disk cache ────────────────────────────────────────────────────────────
-    // SHARED with the image thumbnails: same folder (<LB>\Plugins\ExtendDB\cache\thumbs), same 360 px JPEG
-    // output. The KEY is video-specific though — it also carries the mtime and the frame position, because
+    // Under the VIDEO sub-folder (<LB>\Plugins\ExtendDB\cache\thumbs\video), same 360 px JPEG output as the image
+    // thumbnails. The KEY is video-specific though — it also carries the mtime and the frame position, because
     // replacing a video (same name, same size even) must re-extract instead of showing the stale frame, and
     // moving the 20% mark must not collide with the frames already on disk. "vid-" keeps them recognisable.
     private static string? CachePath(string videoPath)
@@ -234,13 +234,13 @@ internal static class VideoThumbnailer
             string key = videoPath.ToLowerInvariant() + "|" + fi.Length + "|" + fi.LastWriteTimeUtc.Ticks
                        + "|" + MaxDim + "|v" + Position.ToString("0.###", CultureInfo.InvariantCulture);   // invariant: the key must not depend on the locale
             using var md5 = MD5.Create();
-            return Path.Combine(Media.ThumbCache.Folder,
+            return Path.Combine(Media.ThumbCache.VideoFolder,
                 "vid-" + Convert.ToHexString(md5.ComputeHash(System.Text.Encoding.UTF8.GetBytes(key))).ToLowerInvariant() + ".jpg");
         }
         catch { return null; }
     }
 
-    // Web videos: same folder, "vidweb-" prefix. Keyed by the caller (the DB row's CRC — immutable for a row),
+    // Web videos: same video sub-folder, "vidweb-" prefix. Keyed by the caller (the DB row's CRC — immutable for a row),
     // so a frame pulled over the network is decoded ONCE for good, not on every toggle of "show web videos".
     private static string? UrlCachePath(string key)
     {
@@ -249,7 +249,7 @@ internal static class VideoThumbnailer
         {
             using var md5 = MD5.Create();
             string seed = key + "|" + MaxDim + "|v" + Position.ToString("0.###", CultureInfo.InvariantCulture);
-            return Path.Combine(Media.ThumbCache.Folder,
+            return Path.Combine(Media.ThumbCache.VideoFolder,
                 "vidweb-" + Convert.ToHexString(md5.ComputeHash(System.Text.Encoding.UTF8.GetBytes(seed))).ToLowerInvariant() + ".jpg");
         }
         catch { return null; }

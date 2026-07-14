@@ -74,6 +74,45 @@ internal sealed partial class EditGameWindow
     private static readonly Color LbSlotColor = Color.FromArgb(235, 190, 70);    // gold — the image LB really shows
     private static readonly Color LbTypeColor = Color.FromArgb(120, 126, 142);   // neutral steel — wins its type only
 
+    // Web-database source colour (purple). The live sources have their own: EmuBlue / SteamGreen / YtRed.
+    private static readonly Color WebPurple = Color.FromArgb(190, 150, 230);
+
+    private static Color BlendColor(Color a, Color b, float t)
+        => Color.FromArgb(
+            (int)(a.R + (b.R - a.R) * t),
+            (int)(a.G + (b.G - a.G) * t),
+            (int)(a.B + (b.B - a.B) * t));
+
+    /// <summary>
+    /// A source-toggle "chip" for the media editors (Web / EmuMovies / Steam / YouTube rows). The plain flat
+    /// checkbox glyph washed out to grey on the dark canvas — checked vs unchecked was indistinguishable. This
+    /// reads unambiguously: FILLED with a muted tint of the source colour (+ a leading ☑) when ON, hollow with a
+    /// coloured outline (+ ☐) when OFF. Reinforces the "border colour = source" convention used by the tiles.
+    /// </summary>
+    private CheckBox SourceChip(string label, Color color, bool initial, Action<bool> onChanged)
+    {
+        var chk = new CheckBox
+        {
+            Checked = initial, Appearance = Appearance.Button, FlatStyle = FlatStyle.Flat,
+            Cursor = Cursors.Hand, AutoSize = false, TextAlign = ContentAlignment.MiddleCenter,
+            Font = new Font("Segoe UI", 8.5f), TabStop = false, UseVisualStyleBackColor = false,
+        };
+        chk.FlatAppearance.BorderColor = color;
+        chk.FlatAppearance.BorderSize = 1;
+        var onBack = BlendColor(color, Bg, 0.62f);                       // toward Bg → a muted tint, not a garish fill
+        chk.FlatAppearance.CheckedBackColor = onBack;
+        chk.FlatAppearance.MouseOverBackColor = BlendColor(color, Bg, 0.80f);
+        void Restyle()
+        {
+            chk.BackColor = chk.Checked ? onBack : Bg;
+            chk.ForeColor = chk.Checked ? Color.White : BlendColor(color, SubFg, 0.5f);
+            chk.Text = (chk.Checked ? "☑  " : "☐  ") + label;
+        }
+        Restyle();
+        chk.CheckedChanged += (_, _) => { Restyle(); onChanged(chk.Checked); };
+        return chk;
+    }
+
     /// <summary>
     /// The image LaunchBox picks for each image TYPE among <paramref name="files"/>: the first region in the
     /// canonical order (user RegionPriorities → LaunchBox's hard-coded fallback → root last) that has an image
@@ -408,25 +447,93 @@ internal sealed partial class EditGameWindow
         string plat = Safe(() => g.Platform) ?? ""; string idStr = Safe(() => g.Id) ?? "";
         if (string.IsNullOrEmpty(idStr) || string.IsNullOrEmpty(plat)) { MessageBox.Show(this, "This game has no platform / id.", "LiteBox", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
         string sani = MediaResolver.Sanitize(Safe(() => g.Title) ?? "");
-        using var ofd = new OpenFileDialog { Title = "Add image", Filter = "Images (*.png;*.jpg;*.jpeg)|*.png;*.jpg;*.jpeg", CheckFileExists = true };
-        if (ofd.ShowDialog(this) != DialogResult.OK) return;
+
+        // Pick TYPE + REGION first (seeded from the image on screen), THEN the file(s).
         string defType = _imgNavList.Count > 0 ? _imgNavList[_imgNavIdx].Type : "Box - Front";
-        string? type = ImgPickType(defType);
-        if (type == null) return;
-        string? folder = MediaResolver.TypeFolder(plat, type);
-        if (string.IsNullOrEmpty(folder)) { MessageBox.Show(this, "Couldn't resolve the image folder.", "LiteBox", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
-        try
+        string defRegion = _imgNavList.Count > 0 ? _imgNavList[_imgNavIdx].Region : "World";
+        if (!ImgPickTypeRegion(defType, defRegion, out string type, out string region)) return;
+        if (!ImgCopyFilesInto(g, plat, idStr, sani, type, region, out string? lastTarget)) return;
+
+        ImgAfterOp(plat);
+        int at = lastTarget == null ? -1 : _imgNavList.FindIndex(f => string.Equals(f.Path, lastTarget, StringComparison.OrdinalIgnoreCase));
+        if (at >= 0) ImgNavShow(at);
+    }
+
+    /// <summary>Add image(s) to a specific CATEGORY page: the Type dropdown is restricted to that regroupement's
+    /// types (Box - Front, Fanart - Box - Front, …), defaulting to the first — mirrors the Videos page's Add.</summary>
+    private void ImgAddToCategory(string regroupement)
+    {
+        if (_readOnly) return;
+        var g = ImgGame;
+        string plat = Safe(() => g.Platform) ?? ""; string idStr = Safe(() => g.Id) ?? "";
+        if (string.IsNullOrEmpty(idStr) || string.IsNullOrEmpty(plat)) { MessageBox.Show(this, "This game has no platform / id.", "LiteBox", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+        string sani = MediaResolver.Sanitize(Safe(() => g.Title) ?? "");
+        var types = ImgTypesOf(regroupement);
+        if (types.Count == 0) return;
+        if (!ImgPickTypeRegion(types[0], "World", out string type, out string region, types)) return;
+        if (!ImgCopyFilesInto(g, plat, idStr, sani, type, region, out _)) return;
+        ImgAfterOp(plat);   // rebuilds the current category page (or the matrix modal, via ImgAfterOp's hook)
+    }
+
+    /// <summary>Prompt for image file(s) and copy them into the type/region folder (GUID-aware naming, next
+    /// number on disk). Returns true if at least one landed; <paramref name="lastTarget"/> = the last copied path.</summary>
+    private bool ImgCopyFilesInto(IGame g, string plat, string idStr, string sani, string type, string region, out string? lastTarget)
+    {
+        lastTarget = null;
+        string? baseFolder = MediaResolver.TypeFolder(plat, type);
+        if (string.IsNullOrEmpty(baseFolder)) { MessageBox.Show(this, "Couldn't resolve the image folder.", "LiteBox", MessageBoxButtons.OK, MessageBoxIcon.Warning); return false; }
+        string folder = ImgSearchDir(baseFolder, region);
+
+        using var ofd = new OpenFileDialog { Title = "Add image(s)", Filter = "Images (*.png;*.jpg;*.jpeg)|*.png;*.jpg;*.jpeg", CheckFileExists = true, Multiselect = true };
+        if (ofd.ShowDialog(this) != DialogResult.OK) return false;
+
+        int ok = 0;
+        try { Directory.CreateDirectory(folder); } catch { }
+        foreach (var file in ofd.FileNames)
         {
-            Directory.CreateDirectory(folder);
-            string prefix = ImgPrefix(plat, idStr, sani, ofd.FileName, folder);
-            int num = ImgMaxNum(folder, prefix) + 1;
-            string target = Path.Combine(folder, $"{prefix}-{num:D2}{Path.GetExtension(ofd.FileName)}");
-            File.Copy(ofd.FileName, target, overwrite: false);
-            ImgAfterOp(plat);
-            int at = _imgNavList.FindIndex(f => string.Equals(f.Path, target, StringComparison.OrdinalIgnoreCase));
-            if (at >= 0) ImgNavShow(at);
+            try
+            {
+                string prefix = ImgPrefix(plat, idStr, sani, file, folder);
+                int num = ImgMaxNum(folder, prefix) + 1;
+                string target = Path.Combine(folder, $"{prefix}-{num:D2}{Path.GetExtension(file)}");
+                File.Copy(file, target, overwrite: false);
+                lastTarget = target; ok++;
+            }
+            catch (Exception ex) { MessageBox.Show(this, "Add image failed:\n" + Path.GetFileName(file) + "\n" + ex.Message, "LiteBox", MessageBoxButtons.OK, MessageBoxIcon.Error); }
         }
-        catch (Exception ex) { MessageBox.Show(this, "Add image failed:\n" + ex.Message, "LiteBox", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+        return ok > 0;
+    }
+
+    /// <summary>Type + Region picker (before the file dialog), seeded with the current image's slot. When
+    /// <paramref name="allowedTypes"/> is given, the Type dropdown is restricted to those (used by a category
+    /// page's Add button, which only offers the types of that regroupement).</summary>
+    private bool ImgPickTypeRegion(string defType, string defRegion, out string type, out string region, IReadOnlyList<string>? allowedTypes = null)
+    {
+        type = defType; region = defRegion;
+        using var f = NewDialog("Image type & region", 440, 210);
+        var lblT = new Label { Text = "Type:", Location = new Point(S(14), S(18)), AutoSize = true, ForeColor = Fg, BackColor = Bg };
+        var cboT = new ComboBox { Location = new Point(S(110), S(15)), Width = S(304), DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Field, ForeColor = Fg, FlatStyle = FlatStyle.Flat };
+        var typeList = (allowedTypes != null && allowedTypes.Count > 0) ? allowedTypes : MediaResolver.ImageTypeNames();
+        foreach (var t in typeList) cboT.Items.Add(t);
+        if (cboT.Items.Count > 0) { int di = cboT.Items.IndexOf(defType); cboT.SelectedIndex = di >= 0 ? di : 0; }
+
+        var lblR = new Label { Text = "Region:", Location = new Point(S(14), S(58)), AutoSize = true, ForeColor = Fg, BackColor = Bg };
+        var cboR = new ComboBox { Location = new Point(S(110), S(55)), Width = S(304), DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Field, ForeColor = Fg, FlatStyle = FlatStyle.Flat };
+        foreach (var r in ImgMenuRegions()) cboR.Items.Add(r == "none" ? "No Region" : r);
+        int dr = ImgMenuRegions().FindIndex(r => string.Equals(r, defRegion, StringComparison.OrdinalIgnoreCase));
+        cboR.SelectedIndex = dr >= 0 ? dr : 0;
+
+        bool okd = false;
+        DialogButtons(f, out var ok, out var cancel);
+        ok.Click += (_, _) => { okd = true; f.DialogResult = DialogResult.OK; f.Close(); };
+        cancel.Click += (_, _) => { f.DialogResult = DialogResult.Cancel; f.Close(); };
+        f.Controls.Add(lblT); f.Controls.Add(cboT); f.Controls.Add(lblR); f.Controls.Add(cboR);
+        if (f.ShowDialog(this) != DialogResult.OK || !okd) return false;
+
+        type = cboT.SelectedItem as string ?? defType;
+        var regions = ImgMenuRegions();
+        region = (cboR.SelectedIndex >= 0 && cboR.SelectedIndex < regions.Count) ? regions[cboR.SelectedIndex] : defRegion;
+        return true;
     }
 
     private string? ImgPickType(string defaultType)
@@ -492,12 +599,28 @@ internal sealed partial class EditGameWindow
     {
         _imgCurRegroupement = regroupement;
         _imgSelMode = false; _imgSel.Clear(); _imgWebSel.Clear(); _imgSelKind = 0;
-        // Off by default per category: browsing must never pay for CRCs / network. The media matrix forces the
-        // web and/or EmuMovies toggles ON to mirror the grid's enabled sources (so a cell you clicked from the
-        // grid opens showing the same stand-ins it did there — an unchecked page would just look empty).
-        _imgShowWeb = _imgOpenWithWeb;
-        _imgShowEmu = _imgOpenWithEmu;
-        _imgShowSteam = _imgOpenWithSteam;
+        if (_imgModalHolder != null)
+        {
+            // Matrix modal: mirror the GRID's enabled sources exactly (one-shot) so the same stand-ins show, and
+            // rebuild the check-order to match. Isolated from the tree state — the matrix save/restores it.
+            _imgShowWeb = _imgOpenWithWeb;
+            _imgShowEmu = _imgOpenWithEmu;
+            _imgShowSteam = _imgOpenWithSteam;
+            _imgSourceOrder.Clear();
+            foreach (var s in new[] { "web", "emu", "steam" })
+                if ((s == "web" && _imgShowWeb) || (s == "emu" && _imgShowEmu) || (s == "steam" && _imgShowSteam))
+                    _imgSourceOrder.Add(s);
+        }
+        else
+        {
+            // Tree navigation: the chosen sources (and their check-order) PERSIST across categories for the whole
+            // edit session — the user asked once, we don't make them re-tick on every category. Cheap: the
+            // EmuMovies/Steam fetch caches are keyed per game, so leaving a live source on costs one query total,
+            // reused across every category. The matrix's open-with flags only ever force a source ON, never off.
+            if (_imgOpenWithWeb)   { _imgShowWeb = true;   ImgSourceToggle("web", true); }
+            if (_imgOpenWithEmu)   { _imgShowEmu = true;   ImgSourceToggle("emu", true); }
+            if (_imgOpenWithSteam) { _imgShowSteam = true; ImgSourceToggle("steam", true); }
+        }
         var container = new Panel { BackColor = Bg, Dock = DockStyle.Fill };
         var grid = new Panel { BackColor = Bg, AutoScroll = true, Dock = DockStyle.Fill };
         var bar = ImgBuildActionBar();       // docked TOP, hidden until multi-select is on
@@ -533,48 +656,25 @@ internal sealed partial class EditGameWindow
         host.Controls.Add(inner);
         int y = ImgPadY;
 
-        // "Show web images (database)" toggle — only when the offline metadata DB is present + the game is
-        // linked to it. Appears after the owned images, purple-framed (see ImgWebCell).
+        // Top bar (same row as Lock All): a green "＋ Add" that only offers THIS category's types (like the Videos
+        // page's Add), then the source toggles — filled-when-on chips (see SourceChip). Purple = the offline
+        // metadata DB, blue = EmuMovies (live), green = Steam (live). Only shown when that source is applicable.
+        int chipX = ImgPadX + (imgs.Count > 0 && ImageLockBridge.Available ? S(122) : 0);
+        void AddBar(Control c, int w) { c.SetBounds(chipX, y, w, S(26)); inner.Controls.Add(c); chipX += w + S(10); }
+
+        var addBtn = DlgBtn("＋ Add", Color.FromArgb(45, 95, 60)); addBtn.AutoSize = false; addBtn.Enabled = !_readOnly;
+        addBtn.Click += (_, _) => ImgAddToCategory(regroupement);
+        AddBar(addBtn, S(92));
+
         if (webAvail)
-        {
-            var web = new CheckBox
-            {
-                Text = "Show web images (database)", AutoSize = false, ForeColor = Color.FromArgb(190, 150, 230),
-                BackColor = Bg, Font = new Font("Segoe UI", 8.5f), FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand,
-                Checked = _imgShowWeb,
-            };
-            web.SetBounds(ImgPadX + (imgs.Count > 0 && ImageLockBridge.Available ? S(122) : 0), y, S(220), S(26));
-            web.CheckedChanged += (_, _) => { _imgShowWeb = web.Checked; ImgSourceToggle("web", web.Checked); ImgPopulateCategory(regroupement, host); };
-            inner.Controls.Add(web);
-        }
-
-        // "Show EmuMovies images" (blue) — live, the user's own account; distinct from the database (purple).
+            AddBar(SourceChip("Web (database)", WebPurple, _imgShowWeb, on =>
+                { _imgShowWeb = on; ImgSourceToggle("web", on); ImgInvalidateCachedCategories(regroupement); ImgPopulateCategory(regroupement, host); }), S(158));
         if (ImgEmuAvailable(g))
-        {
-            var emu = new CheckBox
-            {
-                Text = "Show EmuMovies images", AutoSize = false, ForeColor = EmuBlue,
-                BackColor = Bg, Font = new Font("Segoe UI", 8.5f), FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand,
-                Checked = _imgShowEmu,
-            };
-            emu.SetBounds(ImgPadX + (imgs.Count > 0 && ImageLockBridge.Available ? S(122) : 0) + S(230), y, S(210), S(26));
-            emu.CheckedChanged += (_, _) => { _imgShowEmu = emu.Checked; ImgSourceToggle("emu", emu.Checked); ImgPopulateCategory(regroupement, host); };
-            inner.Controls.Add(emu);
-        }
-
-        // "Show Steam images" (green) — live, only for a game with a Steam appid.
+            AddBar(SourceChip("EmuMovies", EmuBlue, _imgShowEmu, on =>
+                { _imgShowEmu = on; ImgSourceToggle("emu", on); ImgInvalidateCachedCategories(regroupement); ImgPopulateCategory(regroupement, host); }), S(124));
         if (ImgSteamAvailable(g))
-        {
-            var steam = new CheckBox
-            {
-                Text = "Show Steam images", AutoSize = false, ForeColor = SteamGreen,
-                BackColor = Bg, Font = new Font("Segoe UI", 8.5f), FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand,
-                Checked = _imgShowSteam,
-            };
-            steam.SetBounds(ImgPadX + (imgs.Count > 0 && ImageLockBridge.Available ? S(122) : 0) + S(452), y, S(190), S(26));
-            steam.CheckedChanged += (_, _) => { _imgShowSteam = steam.Checked; ImgSourceToggle("steam", steam.Checked); ImgPopulateCategory(regroupement, host); };
-            inner.Controls.Add(steam);
-        }
+            AddBar(SourceChip("Steam", SteamGreen, _imgShowSteam, on =>
+                { _imgShowSteam = on; ImgSourceToggle("steam", on); ImgInvalidateCachedCategories(regroupement); ImgPopulateCategory(regroupement, host); }), S(100));
 
         // "No images" only when the category is empty AND NEITHER web source will fill it. Without the emu
         // clause an EmuMovies-only view (web off, EmuMovies on) short-circuited here and never rendered.
@@ -669,6 +769,22 @@ internal sealed partial class EditGameWindow
     {
         if (on) { if (!_imgSourceOrder.Contains(src)) _imgSourceOrder.Add(src); }
         else _imgSourceOrder.Remove(src);
+    }
+
+    // The source toggles persist across categories, but ShowPage CACHES each category page — so an already-visited
+    // page would keep the check state it was built with, going stale after you re-toggle on another one. Drop the
+    // other cached category pages here so they rebuild with the current selection on next visit. Skipped inside the
+    // matrix modal (its pages aren't cached and its state is save/restored, so it must not disturb the tree cache).
+    private void ImgInvalidateCachedCategories(string except)
+    {
+        if (_imgModalHolder != null) return;
+        foreach (var key in _pages.Keys.Where(k => ImgIsRegroupement(k)
+                     && !string.Equals(k, except, StringComparison.OrdinalIgnoreCase)).ToList())
+        {
+            var pg = _pages[key];
+            _pages.Remove(key);
+            try { ImgDisposePics(pg); pg.Dispose(); } catch { }
+        }
     }
 
     // ── Merged "images you don't own": database + EmuMovies + Steam in ONE flow, grouped by image type only ────
@@ -1145,6 +1261,71 @@ internal sealed partial class EditGameWindow
         catch { return null; }
     }
 
+    // ── Web-image preview disk cache: <LB>\Plugins\ExtendDB\cache\thumbs\webimg ───────────────────────────────
+    // A web stand-in has no thumbnail endpoint — the CDN only serves the full-size file — so fetching one is
+    // expensive. We persist the DOWNSCALED preview keyed by WebImage.Key (Origin|Type|Region|Duplicate|FileName,
+    // immutable for a given stand-in), so re-navigating / re-toggling never re-downloads. The SAME key + folder
+    // is used by the multi-select grid (MxDecode), so a preview fetched on either side is a hit for the other.
+    private const int ImgWebPreviewDim = ThumbCache.DefaultMaxDim;   // 360 — same convention as every other thumb
+
+    private static string? ImgWebThumbPath(string key)
+    {
+        if (string.IsNullOrEmpty(key)) return null;
+        try
+        {
+            using var md5 = System.Security.Cryptography.MD5.Create();
+            var hash = md5.ComputeHash(System.Text.Encoding.UTF8.GetBytes(key));
+            return Path.Combine(ThumbCache.WebImgFolder, Convert.ToHexString(hash).ToLowerInvariant() + ".jpg");
+        }
+        catch { return null; }
+    }
+
+    /// <summary>Decode arbitrary image bytes and re-encode a ≤360 px JPEG preview (byte[]), or null on failure.
+    /// JPEG (not PNG) to match the grid's existing format and stay compact — previews sit on a dark tile, so the
+    /// lost alpha of a transparent logo just blends into the background, same as the grid already does.</summary>
+    private static byte[]? ImgEncodeWebPreview(byte[]? full)
+    {
+        if (full == null || full.Length == 0) return null;
+        try
+        {
+            using var ms = new MemoryStream(full);
+            using var src = Image.FromStream(ms);
+            double scale = Math.Min(1.0, (double)ImgWebPreviewDim / Math.Max(src.Width, src.Height));
+            int w = Math.Max(1, (int)(src.Width * scale)), h = Math.Max(1, (int)(src.Height * scale));
+            using var bmp = new Bitmap(src, w, h);
+            using var outMs = new MemoryStream();
+            bmp.Save(outMs, System.Drawing.Imaging.ImageFormat.Jpeg);
+            return outMs.ToArray();
+        }
+        catch { return null; }
+    }
+
+    private static void ImgSaveThumbAtomic(string path, byte[] bytes)
+    {
+        try
+        {
+            var tmp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            File.WriteAllBytes(tmp, bytes);
+            try { File.Move(tmp, path, overwrite: false); }
+            catch { try { File.Delete(tmp); } catch { } }   // another cell won the race → keep theirs
+        }
+        catch { }
+    }
+
+    /// <summary>The ≤360 px preview bytes for a web stand-in: from the webimg disk cache when present, else
+    /// fetched from the CDN, re-encoded, and cached. Null on failure. Safe to call off the UI thread.</summary>
+    private byte[]? ImgWebPreviewBytes(MetadataDb.WebImage w)
+    {
+        string? path = ImgWebThumbPath(w.Key);
+        if (path != null && File.Exists(path))
+        {
+            try { return File.ReadAllBytes(path); } catch { try { File.Delete(path); } catch { } }   // corrupt → refetch
+        }
+        var preview = ImgEncodeWebPreview(ImgFetchWebBytes(w));
+        if (preview != null && path != null) ImgSaveThumbAtomic(path, preview);
+        return preview;
+    }
+
     private void ImgLoadThumbWeb(PictureBox pic, MetadataDb.WebImage w)
     {
         // In the matrix modal the tiles are built BEFORE the dialog is shown, so the PictureBox has no window
@@ -1160,14 +1341,11 @@ internal sealed partial class EditGameWindow
         {
             try
             {
-                var bytes = ImgFetchWebBytes(w);
-                if (bytes == null || bytes.Length == 0) return;
-                using var ms = new MemoryStream(bytes);
+                var preview = ImgWebPreviewBytes(w);   // disk cache → else fetch + cache
+                if (preview == null || preview.Length == 0) return;
+                using var ms = new MemoryStream(preview);
                 using var tmp = Image.FromStream(ms);
-                const int maxDim = 320;
-                double scale = Math.Min(1.0, (double)maxDim / Math.Max(tmp.Width, tmp.Height));
-                var sz = new Size(Math.Max(1, (int)(tmp.Width * scale)), Math.Max(1, (int)(tmp.Height * scale)));
-                var bmp = new Bitmap(tmp, sz);
+                var bmp = new Bitmap(tmp);              // detach from the stream; already ≤360 px (PictureBox zoom-fits)
                 try
                 {
                     if (pic.IsHandleCreated) pic.BeginInvoke(new Action(() => { if (!pic.IsDisposed) { var o = pic.Image; pic.Image = bmp; o?.Dispose(); } else bmp.Dispose(); }));
