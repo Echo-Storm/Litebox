@@ -25,6 +25,7 @@ using System.Windows.Forms;
 using Unbroken.LaunchBox.Plugins;
 using Unbroken.LaunchBox.Plugins.Data;
 using LbApiHost.Host.Media;
+using LbApiHost.Host.Integrations;
 
 namespace LbApiHost.Host;
 
@@ -60,6 +61,7 @@ internal sealed partial class EditGameWindow
     private bool _imgSuppressClick;
     private bool _imgShowWeb;        // the "show web images" toggle (per category page)
     private bool _imgOpenWithWeb;    // set by the matrix: open the next category page with the web toggle ON
+    private bool _imgOpenWithEmu;    // …and/or the EmuMovies toggle ON (mirrors the grid's enabled sources)
     private System.Net.Http.HttpClient? _imgHttp;
 
     /// <summary>Winner of its image TYPE (one per type) — see <see cref="ImgLbPicks"/>.</summary>
@@ -488,10 +490,11 @@ internal sealed partial class EditGameWindow
     {
         _imgCurRegroupement = regroupement;
         _imgSelMode = false; _imgSel.Clear(); _imgWebSel.Clear(); _imgSelKind = 0;
-        // Off by default per category: browsing must never pay for CRCs / network. The media matrix forces it
-        // ON when you click a PURPLE (web-only) cell — the category has nothing locally, so an unchecked page
-        // would just be empty.
+        // Off by default per category: browsing must never pay for CRCs / network. The media matrix forces the
+        // web and/or EmuMovies toggles ON to mirror the grid's enabled sources (so a cell you clicked from the
+        // grid opens showing the same stand-ins it did there — an unchecked page would just look empty).
         _imgShowWeb = _imgOpenWithWeb;
+        _imgShowEmu = _imgOpenWithEmu;
         var container = new Panel { BackColor = Bg, Dock = DockStyle.Fill };
         var grid = new Panel { BackColor = Bg, AutoScroll = true, Dock = DockStyle.Fill };
         var bar = ImgBuildActionBar();       // docked TOP, hidden until multi-select is on
@@ -541,7 +544,23 @@ internal sealed partial class EditGameWindow
             inner.Controls.Add(web);
         }
 
-        if (imgs.Count == 0 && !(webAvail && _imgShowWeb))
+        // "Show EmuMovies images" (blue) — live, the user's own account; distinct from the database (purple).
+        if (ImgEmuAvailable(g))
+        {
+            var emu = new CheckBox
+            {
+                Text = "Show EmuMovies images", AutoSize = false, ForeColor = EmuBlue,
+                BackColor = Bg, Font = new Font("Segoe UI", 8.5f), FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand,
+                Checked = _imgShowEmu,
+            };
+            emu.SetBounds(ImgPadX + (imgs.Count > 0 && ImageLockBridge.Available ? S(122) : 0) + S(230), y, S(210), S(26));
+            emu.CheckedChanged += (_, _) => { _imgShowEmu = emu.Checked; ImgPopulateCategory(regroupement, host); };
+            inner.Controls.Add(emu);
+        }
+
+        // "No images" only when the category is empty AND NEITHER web source will fill it. Without the emu
+        // clause an EmuMovies-only view (web off, EmuMovies on) short-circuited here and never rendered.
+        if (imgs.Count == 0 && !(webAvail && _imgShowWeb) && !(_imgShowEmu && ImgEmuAvailable(g)))
         {
             var none = new Label
             {
@@ -623,6 +642,200 @@ internal sealed partial class EditGameWindow
         }
 
         if (webAvail && _imgShowWeb) ImgAppendWebTiles(g, dbId, imgs, types, inner, ref y);
+        if (_imgShowEmu && ImgEmuAvailable(g)) ImgAppendEmuTiles(g, regroupement, imgs, types, host, inner, ref y);
+    }
+
+    // ── EmuMovies images (blue) — LIVE, the user's own account ────────────────
+    private bool _imgShowEmu;
+    private readonly Dictionary<string, List<EmuMoviesCatalog.EmuMedia>?> _imgEmuCache = new(StringComparer.Ordinal);
+
+    private bool ImgEmuAvailable(IGame g)
+    {
+        try { return EmuMoviesCatalog.SupportsPlatform(Safe(() => g.Platform) ?? "") && EmuMoviesApi.FromLbSettings() != null; }
+        catch { return false; }
+    }
+
+    private void ImgAppendEmuTiles(IGame g, string regroupement, List<ImgFile> catImgs, List<string> types, Panel host, Panel inner, ref int y)
+    {
+        string idKey = Safe(() => g.Id) ?? Safe(() => g.Title) ?? "";
+        var typeSet = new HashSet<string>(types, StringComparer.OrdinalIgnoreCase);
+
+        y += S(10);
+        var hdr = new Label
+        {
+            Text = "🎬  EmuMovies — images you don't own (blue border · download to add)",
+            ForeColor = EmuBlue, Font = new Font("Segoe UI", 9.5f, FontStyle.Bold), AutoSize = false, BackColor = Bg,
+        };
+        hdr.SetBounds(ImgPadX, y, S(640), S(26)); inner.Controls.Add(hdr); y += S(32);
+
+        if (!_imgEmuCache.TryGetValue(idKey, out var media))
+        {
+            _imgEmuCache[idKey] = null;
+            inner.Controls.Add(new Label { Text = "Querying EmuMovies…", ForeColor = SubFg, BackColor = Bg, AutoSize = true, Font = new Font("Segoe UI", 9f, FontStyle.Italic), Location = new Point(ImgPadX + S(4), y) });
+            string romPath = Safe(() => g.ApplicationPath) ?? "";
+            string title = Safe(() => g.Title) ?? "";
+            string plat = Safe(() => g.Platform) ?? "";
+            System.Threading.Tasks.Task.Run(async () =>
+            {
+                List<EmuMoviesCatalog.EmuMedia> found = new();
+                try { var api = EmuApi(); if (api != null) found = await EmuMoviesCatalog.ResolveForGameAsync(api, title, romPath, plat); }
+                catch { }
+                try
+                {
+                    if (IsDisposed || !IsHandleCreated) return;
+                    BeginInvoke(new Action(() => { _imgEmuCache[idKey] = found; if (_imgCurRegroupement == regroupement) ImgPopulateCategory(regroupement, host); }));
+                }
+                catch { }
+            });
+            return;
+        }
+        if (media == null) return;
+
+        // Owned from ADS (stored EmuMovies CRC / size), then disk size as a last resort — NOT a recomputed CRC:
+        // Cloudflare re-compresses EmuMovies images in transit, so the downloaded bytes' CRC won't match the
+        // API's. See BuildEmuOwned.
+        var owned = BuildEmuOwned(catImgs.Select(f => f.Path));
+        var show = media.Where(m => typeSet.Contains(m.LbType) && !EmuOwns(owned, m.Crc, m.FileSize)).ToList();
+        if (show.Count == 0)
+        {
+            inner.Controls.Add(new Label { Text = "No EmuMovies image for this category.", ForeColor = SubFg, BackColor = Bg, AutoSize = true, Font = new Font("Segoe UI", 9f, FontStyle.Italic), Location = new Point(ImgPadX + S(4), y) });
+            y += S(26);
+            return;
+        }
+
+        foreach (var type in types)
+        {
+            var ofType = show.Where(m => string.Equals(m.LbType, type, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (ofType.Count == 0) continue;
+            var th = new Label { Text = $"━━  {type}", ForeColor = Fg, Font = new Font("Segoe UI", 9.5f, FontStyle.Bold), AutoSize = false, BackColor = Bg };
+            th.SetBounds(ImgPadX, y, S(600), S(26)); inner.Controls.Add(th); y += S(30);
+            int x = ImgPadX + S(8);
+            foreach (var m in ofType) { var cell = ImgEmuCell(m); cell.Location = new Point(x, y); inner.Controls.Add(cell); x += ImgCellW; }
+            y += ImgCellH;
+        }
+    }
+
+    private Panel ImgEmuCell(EmuMoviesCatalog.EmuMedia m)
+    {
+        var cell = new Panel { Size = new Size(ImgCellW, ImgCellH), BackColor = Bg };
+        var frame = new Panel { BackColor = EmuBlue, Padding = new Padding(S(2)) };   // blue = EmuMovies
+        frame.SetBounds(S(4), S(4), ImgCellW - S(8), ImgThumbH);
+        var pic = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.FromArgb(18, 18, 24), Cursor = Cursors.Hand };
+        ImgLoadThumbEmu(pic, m);
+        var mi = m;
+        pic.MouseUp += (_, e) =>
+        {
+            if (e.Button == MouseButtons.Right)
+            {
+                var menu = ThemedMenu();
+                menu.Items.Add(new ToolStripMenuItem("⬇  Download").WithClick(() => ImgDownloadEmu(mi)));
+                menu.Items.Add(new ToolStripMenuItem("🔍  View fullscreen").WithClick(() => ImgViewEmuFullscreen(mi)));
+                menu.Show(pic, e.Location);
+                return;
+            }
+            if (e.Button == MouseButtons.Left) ImgViewEmuFullscreen(mi);   // left = preview, like the purple tiles
+        };
+        frame.Controls.Add(pic);
+        cell.Controls.Add(frame);
+
+        var cap = new Label { Text = "EmuMovies · " + (string.IsNullOrEmpty(m.Region) ? "World" : m.Region), ForeColor = EmuBlue, BackColor = Bg, Font = new Font("Segoe UI", 8f), AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
+        cap.SetBounds(S(4), ImgCellH - S(42), ImgCellW - S(8), S(20));
+        cell.Controls.Add(cap);
+        cell.Controls.Add(ProvLabel_Static(m.MediaType, S(4), ImgCellH - S(22), ImgCellW - S(8)));
+        return cell;
+    }
+
+    private Label ProvLabel_Static(string text, int x, int y, int w)
+    {
+        var l = new Label { Text = text, ForeColor = ProvFg, BackColor = Bg, Font = new Font("Segoe UI", 7.5f), AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
+        l.SetBounds(x, y, w, S(16));
+        return l;
+    }
+
+    /// <summary>Direct GET of an EmuMovies media URL (no auth, just the Referer). Null on failure.</summary>
+    private byte[]? EmuFetchBytes(string url)
+    {
+        try
+        {
+            _imgHttp ??= NewHttp();
+            using var req = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, url);
+            req.Headers.Referrer = new Uri(EmuMoviesApi.MediaReferer);
+            using var resp = _imgHttp.Send(req);
+            return resp.IsSuccessStatusCode ? resp.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult() : null;
+        }
+        catch { return null; }
+    }
+
+    private void ImgViewEmuFullscreen(EmuMoviesCatalog.EmuMedia m)
+    {
+        byte[]? bytes = null;
+        UseWaitCursor = true;
+        try { bytes = EmuFetchBytes(m.Url); } catch { } finally { UseWaitCursor = false; }
+        ShowImageFullscreenBytes(bytes);
+    }
+
+    private void ImgLoadThumbEmu(PictureBox pic, EmuMoviesCatalog.EmuMedia m)
+    {
+        // Same deferral as ImgLoadThumbWeb: the modal builds tiles before it's shown (no handle yet).
+        if (!pic.IsHandleCreated)
+        {
+            void OnCreated(object? _, EventArgs __) { pic.HandleCreated -= OnCreated; ImgLoadThumbEmu(pic, m); }
+            pic.HandleCreated += OnCreated;
+            return;
+        }
+        var mi = m;
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            try
+            {
+                var bytes = EmuFetchBytes(mi.Url);
+                if (bytes == null) return;
+                using var ms = new MemoryStream(bytes);
+                using var tmp = Image.FromStream(ms);
+                const int maxDim = 320;
+                double scale = Math.Min(1.0, (double)maxDim / Math.Max(tmp.Width, tmp.Height));
+                var bmp = new Bitmap(tmp, new Size(Math.Max(1, (int)(tmp.Width * scale)), Math.Max(1, (int)(tmp.Height * scale))));
+                try { if (pic.IsHandleCreated) pic.BeginInvoke(new Action(() => { if (!pic.IsDisposed) { var o = pic.Image; pic.Image = bmp; o?.Dispose(); } else bmp.Dispose(); })); else bmp.Dispose(); }
+                catch { bmp.Dispose(); }
+            }
+            catch { }
+        });
+    }
+
+    private void ImgDownloadEmu(EmuMoviesCatalog.EmuMedia m)
+    {
+        if (_readOnly) return;
+        var g = ImgGame;
+        string plat = Safe(() => g.Platform) ?? "";
+        string idStr = Safe(() => g.Id) ?? "";
+        int dbId = Safe(() => g.LaunchBoxDbId) ?? -1;
+        if (string.IsNullOrEmpty(plat) || string.IsNullOrEmpty(idStr)) return;
+
+        byte[]? bytes = null;
+        UseWaitCursor = true;
+        try { bytes = EmuFetchBytes(m.Url); } catch { } finally { UseWaitCursor = false; }
+
+        if (bytes == null || bytes.Length == 0) { MessageBox.Show(this, "The EmuMovies download failed.", "LiteBox", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+
+        try
+        {
+            string ext = string.IsNullOrEmpty(m.Ext) ? "png" : m.Ext;
+            string region = string.IsNullOrEmpty(m.Region) ? "World" : m.Region;
+            string? baseFolder = MediaResolver.TypeFolder(plat, m.LbType);
+            if (string.IsNullOrEmpty(baseFolder)) return;
+            string dir = ImgSearchDir(baseFolder, region);
+            Directory.CreateDirectory(dir);
+            string sani = MediaResolver.Sanitize(Safe(() => g.Title) ?? "");
+            string prefix = ImgPrefix(plat, idStr, sani, null, dir);
+            int num = ImgMaxNum(dir, prefix) + 1;
+            string target = Path.Combine(dir, $"{prefix}-{num:D2}.{ext.TrimStart('.')}");
+            File.WriteAllBytes(target, bytes);
+
+            var wi = new MetadataDb.WebImage(dbId, m.Url, m.LbType, m.Region, m.Crc, "emumovies", 0, m.Ext, m.FileSize);
+            ImageAdsWriter.WriteForDownload(target, wi, dbId, plat);
+            ImgAfterOp(plat);
+        }
+        catch (Exception ex) { MessageBox.Show(this, "Download failed:\n" + ex.Message, "LiteBox", MessageBoxButtons.OK, MessageBoxIcon.Error); }
     }
 
     // ── Web images (from the offline LaunchBox metadata DB) ───────────────────
@@ -747,6 +960,11 @@ internal sealed partial class EditGameWindow
     {
         try
         {
+            // A LIVE EmuMovies stand-in carries the full media.emumovies.com URL as its FileName and needs no
+            // auth (just the Referer) — a plain GET, independent of the extended DB.
+            if (string.Equals(w.Origin, "emumovies", StringComparison.OrdinalIgnoreCase))
+                return EmuFetchBytes(w.FileName);
+
             // Per-origin wizard fetch when the extended-DB module is on, or (defensively) for any non-launchbox
             // row while ExtendDB's fetcher is reachable — those have no valid CDN URL. Launchbox rows always
             // fall back to the CDN.
@@ -765,6 +983,15 @@ internal sealed partial class EditGameWindow
 
     private void ImgLoadThumbWeb(PictureBox pic, MetadataDb.WebImage w)
     {
+        // In the matrix modal the tiles are built BEFORE the dialog is shown, so the PictureBox has no window
+        // handle yet and BeginInvoke (below) would drop the decoded frame. Defer the load until the handle
+        // exists — fires immediately in the already-shown single-game page, and on Show inside the modal.
+        if (!pic.IsHandleCreated)
+        {
+            void OnCreated(object? _, EventArgs __) { pic.HandleCreated -= OnCreated; ImgLoadThumbWeb(pic, w); }
+            pic.HandleCreated += OnCreated;
+            return;
+        }
         System.Threading.Tasks.Task.Run(() =>
         {
             try
@@ -854,6 +1081,11 @@ internal sealed partial class EditGameWindow
         byte[]? bytes = null;
         UseWaitCursor = true;
         try { bytes = ImgFetchWebBytes(w); } catch { } finally { UseWaitCursor = false; }
+        ShowImageFullscreenBytes(bytes);
+    }
+
+    private void ShowImageFullscreenBytes(byte[]? bytes)
+    {
         if (bytes == null || bytes.Length == 0) { MessageBox.Show(this, "Couldn't load the image.", "LiteBox", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
         var scr = Screen.FromControl(this) ?? Screen.PrimaryScreen;
         var f = new Form

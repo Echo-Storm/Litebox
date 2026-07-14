@@ -850,13 +850,48 @@ internal static class LbGlobalOptions
         }
 
         // ── EmuMovies ──
+        // The password is stored ENCRYPTED in Settings.xml (LB's Rijndael-256 settings cipher). We show it
+        // decrypted and re-encrypt on save, byte-identically to LaunchBox, so the real LB reads it back and the
+        // Test button (which needs the clear password) works. See LbSettingsCrypto.
         {
             var p = Page("EmuMovies");
             p.Controls.Add(Lbl("User ID", new Point(S(4), S(8))));
             var user = Txt(s.Get("EmuMoviesUserId"), new Point(S(4), S(28)), 280); p.Controls.Add(user);
             p.Controls.Add(Lbl("Password", new Point(S(4), S(60))));
-            var pwd = Txt(s.Get("EmuMoviesPassword"), new Point(S(4), S(80)), 280, pwd: true); p.Controls.Add(pwd);
-            BindTxt(user, "EmuMoviesUserId"); BindTxt(pwd, "EmuMoviesPassword");
+            var pwd = Txt(Data.LbSettingsCrypto.DecryptEmuMoviesPassword(s.Get("EmuMoviesPassword")),
+                          new Point(S(4), S(80)), 280, pwd: true); p.Controls.Add(pwd);
+
+            var test = new Button
+            {
+                Text = "Test", Location = new Point(S(4), S(116)), Size = new Size(S(84), S(26)),
+                FlatStyle = FlatStyle.Flat, BackColor = Panel2, ForeColor = Fg, FlatAppearance = { BorderSize = 0 },
+                Font = new Font("Segoe UI", 8.5f), Enabled = !readOnly,
+            };
+            var neutral = Color.FromArgb(150, 156, 172);
+            var testMsg = new Label
+            {
+                Location = new Point(S(96), S(120)), AutoSize = true, ForeColor = neutral, BackColor = Bg,
+                Font = new Font("Segoe UI", 8.5f), Text = "",
+            };
+            test.Click += async (_, _) =>
+            {
+                test.Enabled = false; testMsg.ForeColor = neutral; testMsg.Text = "Testing…";
+                var (res, msg) = await new Integrations.EmuMoviesApi(user.Text, pwd.Text).TestAsync();
+                testMsg.ForeColor = res == Integrations.EmuMoviesApi.TestResult.Ok
+                    ? Color.FromArgb(120, 200, 120) : Color.FromArgb(215, 130, 120);
+                testMsg.Text = msg;
+                test.Enabled = !readOnly;
+            };
+            p.Controls.Add(test); p.Controls.Add(testMsg);
+
+            BindTxt(user, "EmuMoviesUserId");
+            // Encrypt back to LB's blob on save (only when changed, to avoid re-encrypting to a different-but-
+            // equivalent ciphertext — CBC with a fixed IV is deterministic, so equal clear ⇒ equal blob).
+            applies.Add(() =>
+            {
+                string blob = Data.LbSettingsCrypto.EncryptEmuMoviesPassword(pwd.Text);
+                if (blob != s.Get("EmuMoviesPassword")) s.Set("EmuMoviesPassword", blob);
+            });
         }
 
         // ── GOG ── (credentials round-trip + a LOCAL diagnostics panel: galaxy-2.0.db is the achievements

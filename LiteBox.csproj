@@ -110,6 +110,13 @@
       <HintPath>..\..\..\LB\Core\SQLitePCLRaw.batteries_v2.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!-- BouncyCastle: LaunchBox ships it in Core and uses it for its settings cipher (Rijndael-256/CBC/PKCS7).
+         Compile-only (Private=false) — resolved from Core at runtime, version-agnostic like the refs above. Lets
+         LiteBox read/write LB's encrypted settings (EmuMovies password, …) in the exact same format. -->
+    <Reference Include="BouncyCastle.Crypto">
+      <HintPath>..\..\..\LB\Core\BouncyCastle.Crypto.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <!-- WinRT projection + runtime (Windows.Graphics.Capture etc.), resolved from LB\Core. -->
     <Reference Include="Microsoft.Windows.SDK.NET">
       <HintPath>$(WinRtRefDir)\Microsoft.Windows.SDK.NET.dll</HintPath>

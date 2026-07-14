@@ -22,6 +22,7 @@ using System.Windows.Forms;
 using Unbroken.LaunchBox.Plugins.Data;
 using LbApiHost.Host.Media;
 using LbApiHost.Host.Video;
+using LbApiHost.Host.Integrations;
 
 namespace LbApiHost.Host;
 
@@ -80,6 +81,21 @@ internal sealed partial class EditGameWindow
             bar.Controls.Add(web);
         }
 
+        // "Show EmuMovies videos" (blue) — a SEPARATE source from the database (purple): queries EmuMovies LIVE
+        // with the user's own account. Only when credentials are configured AND this platform maps to EmuMovies.
+        if (VidEmuAvailable(ImgGame))
+        {
+            var emu = new CheckBox
+            {
+                Text = "Show EmuMovies videos", AutoSize = false, ForeColor = EmuBlue,
+                BackColor = Bg, Font = new Font("Segoe UI", 8.5f), FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand,
+                Checked = _vidShowEmu,
+            };
+            emu.SetBounds(S(348), S(8), S(190), S(26));
+            emu.CheckedChanged += (_, _) => { _vidShowEmu = emu.Checked; VidPopulate(host, null); };
+            bar.Controls.Add(emu);
+        }
+
         if (!VlcService.Available)
         {
             var warn = new Label
@@ -106,8 +122,9 @@ internal sealed partial class EditGameWindow
         var all = VidScan(g);
         var types = onlyType != null ? new List<string> { onlyType } : VidTypes().ToList();
         bool web = VidWebAvailable && _vidShowWeb;
+        bool emu = _vidShowEmu && VidEmuAvailable(g);
 
-        if (!all.Any(v => types.Contains(v.Type, StringComparer.OrdinalIgnoreCase)) && !web)
+        if (!all.Any(v => types.Contains(v.Type, StringComparer.OrdinalIgnoreCase)) && !web && !emu)
         {
             host.Controls.Add(new Label
             {
@@ -149,6 +166,7 @@ internal sealed partial class EditGameWindow
         }
 
         if (web) VidAppendWebTiles(g, all, inner, ref y);
+        if (emu) VidAppendEmuTiles(g, all, inner, ref y);
     }
 
     private Panel VidCell(VidFile v)
@@ -663,6 +681,276 @@ internal sealed partial class EditGameWindow
             (VidIsHlsRow(w) ? "\n⚠  HLS stream (fake .mp4) — plays, but can only be saved if the mirror has a copy.\n" : "") +
             $"\nDB FileName:\n  {w.FileName}\n\nSource chain (tried in order):\n{chain}\n";
         MessageBox.Show(this, text, "Web video info", MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
+
+    // ── EmuMovies videos (blue) — LIVE, the user's own account ────────────────
+    // A source distinct from the database (purple): queries EmuMovies live via the user's credentials
+    // (EmuMoviesApi/EmuMoviesCatalog), matches this game by title + MAME rom-stem, and lists the video assets.
+    // The media.emumovies.com file GET needs no auth (only a Referer), so streaming/downloading is a plain GET.
+    // Best-effort: unmatched games simply show nothing.
+
+    private static readonly Color EmuBlue = Color.FromArgb(90, 150, 220);
+    private bool _vidShowEmu;
+    private EmuMoviesApi? _emuApi;
+    private bool _emuApiProbed;
+    // Per-game cache of the resolved EmuMovies assets (null value = fetch in flight / not started).
+    private readonly Dictionary<string, List<EmuMoviesCatalog.EmuMedia>?> _vidEmuCache = new(StringComparer.Ordinal);
+
+    /// <summary>EmuMovies is usable for a game: credentials configured AND its platform maps to EmuMovies (else
+    /// the checkbox would resolve to nothing). Same gate as the image side (ImgEmuAvailable).</summary>
+    private static bool VidEmuAvailable(IGame g)
+    {
+        try { return EmuMoviesCatalog.SupportsPlatform(Safe(() => g.Platform) ?? "") && EmuMoviesApi.FromLbSettings() != null; }
+        catch { return false; }
+    }
+
+    // ── Owned detection for a web/EmuMovies source (shared by images + videos) ──
+    // Priority, per the user: the ADS-recorded values first (they survive a re-cut — a trimmed video's on-disk
+    // size changes but its :info FileSize keeps the original), then the on-disk size ONLY for files that carry
+    // no ADS size. CRC comes from the ADS too (never recomputed — Cloudflare re-compresses EmuMovies images in
+    // transit, so a recomputed CRC wouldn't match the API's anyway).
+    internal readonly record struct EmuOwnedIndex(HashSet<uint> Crc, HashSet<long> AdsFs, HashSet<long> DiskFsNoAds);
+
+    internal static EmuOwnedIndex BuildEmuOwned(IEnumerable<string> paths)
+    {
+        var crc = new HashSet<uint>();
+        var adsFs = new HashSet<long>();
+        var diskNoAds = new HashSet<long>();
+        foreach (var p in paths)
+        {
+            var s = FileMetaStore.Read(p, FileMetaStore.StreamCrc32);
+            if (!string.IsNullOrEmpty(s) && long.TryParse(s, out var c) && c != 0) crc.Add(unchecked((uint)c));
+            long adsSize = 0;
+            var info = ImageInfoBridge.ReadAny(p);
+            if (info is ImageInfo i && i.FileSize > 0) { adsSize = i.FileSize; adsFs.Add(i.FileSize); }
+            if (adsSize == 0) { try { var len = new FileInfo(p).Length; if (len > 0) diskNoAds.Add(len); } catch { } }
+        }
+        return new EmuOwnedIndex(crc, adsFs, diskNoAds);
+    }
+
+    internal static bool EmuOwns(EmuOwnedIndex idx, long crc, long fileSize)
+        => idx.Crc.Contains(unchecked((uint)crc))
+        || (fileSize > 0 && idx.AdsFs.Contains(fileSize))          // ADS size — priority, survives a re-cut
+        || (fileSize > 0 && idx.DiskFsNoAds.Contains(fileSize));   // disk size — only when no ADS size
+
+    private EmuMoviesApi? EmuApi()
+    {
+        if (!_emuApiProbed) { _emuApiProbed = true; _emuApi = EmuMoviesApi.FromLbSettings(); }
+        return _emuApi;
+    }
+
+    private void VidAppendEmuTiles(IGame g, List<VidFile> local, Panel inner, ref int y)
+    {
+        string plat = Safe(() => g.Platform) ?? "";
+        if (!EmuMoviesCatalog.SupportsPlatform(plat)) return;
+        string idKey = Safe(() => g.Id) ?? Safe(() => g.Title) ?? "";
+
+        y += S(10);
+        var hdr = new Label
+        {
+            Text = "🎬  EmuMovies — videos for this game (blue border · click to stream · right-click to download)",
+            ForeColor = EmuBlue, Font = new Font("Segoe UI", 9.5f, FontStyle.Bold), AutoSize = false, BackColor = Bg,
+        };
+        hdr.SetBounds(S(12), y, S(760), S(26)); inner.Controls.Add(hdr); y += S(32);
+
+        // Not resolved yet → show a loading note and fetch off the UI thread, then rebuild from cache.
+        if (!_vidEmuCache.TryGetValue(idKey, out var media))
+        {
+            _vidEmuCache[idKey] = null;   // mark in-flight
+            var loading = new Label
+            {
+                Text = "Querying EmuMovies…", ForeColor = SubFg, BackColor = Bg, AutoSize = true,
+                Font = new Font("Segoe UI", 9f, FontStyle.Italic), Location = new Point(S(16), y),
+            };
+            inner.Controls.Add(loading);
+            string romPath = Safe(() => g.ApplicationPath) ?? "";
+            string title = Safe(() => g.Title) ?? "";
+            System.Threading.Tasks.Task.Run(async () =>
+            {
+                List<EmuMoviesCatalog.EmuMedia> found = new();
+                try
+                {
+                    var api = EmuApi();
+                    if (api != null)
+                        found = await EmuMoviesCatalog.ResolveForGameAsync(api, title, romPath, plat);
+                }
+                catch { }
+                // keep only video types
+                found = found.Where(m => m.LbType == "Video" || m.LbType == "VideoAdvert").ToList();
+                try
+                {
+                    if (IsDisposed || !IsHandleCreated) return;
+                    BeginInvoke(new Action(() =>
+                    {
+                        _vidEmuCache[idKey] = found;
+                        if (_tree.SelectedNode?.Tag?.ToString() == "Videos") { _pages.Remove("Videos"); ShowPage("Videos"); }
+                    }));
+                }
+                catch { }
+            });
+            return;
+        }
+
+        if (media == null) { /* still loading (shouldn't reach here after the branch above) */ return; }
+        if (media.Count == 0)
+        {
+            inner.Controls.Add(new Label
+            {
+                Text = "No EmuMovies video matched this game.", ForeColor = SubFg, BackColor = Bg, AutoSize = true,
+                Font = new Font("Segoe UI", 9f, FontStyle.Italic), Location = new Point(S(16), y),
+            });
+            y += S(26);
+            return;
+        }
+
+        var owned = BuildEmuOwned(local.Select(v => v.Path));
+        var show = media.Where(m => !EmuOwns(owned, m.Crc, m.FileSize)).ToList();
+        if (show.Count == 0) { inner.Controls.Add(new Label { Text = "All EmuMovies videos already owned.", ForeColor = SubFg, BackColor = Bg, AutoSize = true, Font = new Font("Segoe UI", 9f, FontStyle.Italic), Location = new Point(S(16), y) }); y += S(26); return; }
+
+        int x = S(12);
+        foreach (var m in show)
+        {
+            var cell = VidEmuCell(m);
+            cell.Location = new Point(x, y);
+            inner.Controls.Add(cell);
+            x += VidCellW;
+            if (x + VidCellW > inner.Width && inner.Width > 0) { x = S(12); y += VidCellH + S(8); }
+        }
+        y += VidCellH + S(8);
+    }
+
+    private Panel VidEmuCell(EmuMoviesCatalog.EmuMedia m)
+    {
+        var cell = new Panel { Size = new Size(VidCellW, VidCellH), BackColor = Bg };
+
+        var frame = new Panel { BackColor = EmuBlue, Padding = new Padding(S(2)) };   // blue = EmuMovies
+        frame.SetBounds(S(4), S(4), VidCellW - S(12), VidThumbH);
+        var pic = new PictureBox
+        {
+            Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.FromArgb(18, 18, 24),
+            Cursor = Cursors.Hand,
+        };
+        VidLoadThumbEmu(pic, m);
+        var mi = m;
+        pic.MouseUp += (_, e) =>
+        {
+            if (e.Button == MouseButtons.Right) { VidEmuMenu(mi).Show(pic, e.Location); return; }
+            if (e.Button == MouseButtons.Left) VidPlayEmu(mi);
+        };
+        frame.Controls.Add(pic);
+        cell.Controls.Add(frame);
+
+        var name = new Label
+        {
+            Text = "EmuMovies · " + m.MediaType, ForeColor = EmuBlue, BackColor = Bg, Font = new Font("Segoe UI", 8f),
+            AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true,
+        };
+        name.SetBounds(S(4), VidThumbH + S(8), VidCellW - S(12), S(18));
+        cell.Controls.Add(name);
+
+        string size = m.FileSize > 0 ? $"{m.FileSize / (1024.0 * 1024.0):0.#} MB" : "";
+        var meta = new Label
+        {
+            Text = (string.IsNullOrEmpty(m.Region) ? "World" : m.Region) + (size.Length > 0 ? "   " + size : ""),
+            ForeColor = Color.FromArgb(120, 126, 142), BackColor = Bg, Font = new Font("Segoe UI", 8f),
+            AutoSize = false, TextAlign = ContentAlignment.MiddleLeft,
+        };
+        meta.SetBounds(S(4), VidThumbH + S(26), VidCellW - S(12), S(16));
+        cell.Controls.Add(meta);
+        return cell;
+    }
+
+    private ContextMenuStrip VidEmuMenu(EmuMoviesCatalog.EmuMedia m)
+    {
+        var menu = ThemedMenu();
+        menu.Items.Add(new ToolStripMenuItem("▶  Play (stream)").WithClick(() => VidPlayEmu(m)));
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(new ToolStripMenuItem("⬇  Download").WithClick(() => VidDownloadEmu(m, "Video Snap")));
+        var asType = new ToolStripMenuItem("⬇  Download As");
+        foreach (var t in VidTypes()) { string tt = t; asType.DropDownItems.Add(new ToolStripMenuItem(tt).WithClick(() => VidDownloadEmu(m, tt))); }
+        menu.Items.Add(asType);
+        return menu;
+    }
+
+    private void VidLoadThumbEmu(PictureBox pic, EmuMoviesCatalog.EmuMedia m)
+    {
+        if (!VlcService.Available) return;
+        // Defer until the box has a window handle (a page built before it's shown has none — the decoded frame
+        // would otherwise be dropped by BeginInvoke below). Same fix as the image tiles.
+        if (!pic.IsHandleCreated)
+        {
+            void OnCreated(object? _, EventArgs __) { pic.HandleCreated -= OnCreated; VidLoadThumbEmu(pic, m); }
+            pic.HandleCreated += OnCreated;
+            return;
+        }
+        var mi = m;
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            Image? thumb = null;
+            try { thumb = VideoThumbnailer.GetFromUrl(mi.Url, EmuMoviesApi.MediaReferer, "emu:" + mi.Crc + ":" + mi.Url); } catch { }
+            if (thumb == null) return;
+            try
+            {
+                if (pic.IsDisposed || !pic.IsHandleCreated) { thumb.Dispose(); return; }
+                pic.BeginInvoke(new Action(() => { if (pic.IsDisposed) { thumb.Dispose(); return; } var old = pic.Image; pic.Image = thumb; old?.Dispose(); }));
+            }
+            catch { thumb.Dispose(); }
+        });
+    }
+
+    private void VidPlayEmu(EmuMoviesCatalog.EmuMedia m)
+        => VideoPlayerDialog.PlayWeb(this, $"EmuMovies · {m.MediaType}",
+               new[] { new VideoPlayerDialog.Source(m.Url, EmuMoviesApi.MediaReferer) });
+
+    private void VidDownloadEmu(EmuMoviesCatalog.EmuMedia m, string targetType)
+    {
+        if (_readOnly) return;
+        var g = ImgGame;
+        string plat = Safe(() => g.Platform) ?? "";
+        string idStr = Safe(() => g.Id) ?? "";
+        int dbId = Safe(() => g.LaunchBoxDbId) ?? -1;
+        if (string.IsNullOrEmpty(plat) || string.IsNullOrEmpty(idStr)) return;
+
+        byte[]? bytes = null;
+        UseWaitCursor = true;
+        try
+        {
+            using var http = NewHttp();
+            using var req = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, m.Url);
+            req.Headers.Referrer = new Uri(EmuMoviesApi.MediaReferer);
+            using var resp = http.Send(req);
+            if (resp.IsSuccessStatusCode) bytes = resp.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult();
+        }
+        catch { }
+        finally { UseWaitCursor = false; }
+
+        if (bytes == null || bytes.Length == 0)
+        {
+            MessageBox.Show(this, "The EmuMovies download failed.", "LiteBox", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        try
+        {
+            string ext = string.IsNullOrEmpty(m.Ext) ? "mp4" : m.Ext;
+            string? dir = MediaResolver.VideoTypeFolder(plat, targetType);
+            if (string.IsNullOrEmpty(dir)) return;
+            Directory.CreateDirectory(dir);
+            string sani = MediaResolver.Sanitize(Safe(() => g.Title) ?? "");
+            string prefix = ImgPrefix(plat, idStr, sani, null, dir);
+            int num = ImgMaxNum(dir, prefix) + 1;
+            string target = Path.Combine(dir, $"{prefix}-{num:D2}.{ext.TrimStart('.')}");
+            File.WriteAllBytes(target, bytes);
+
+            // ADS in ExtendDB format (origin=emumovies, the API's CRC + file size).
+            var wi = new MetadataDb.WebImage(dbId, m.Url, m.LbType, m.Region, m.Crc, "emumovies", 0, m.Ext, m.FileSize);
+            ImageAdsWriter.WriteForDownload(target, wi, dbId, plat);
+            VidAfterOp(plat);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, "Download failed:\n" + ex.Message, "LiteBox", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     // ── Disk scan ─────────────────────────────────────────────────────────────
