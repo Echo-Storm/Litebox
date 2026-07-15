@@ -416,8 +416,32 @@ internal static class LbGlobalOptions
             BindIniChk(frzTree, "PauseFreezeTree", false);
             applies.Add(() => { var v = tgtCbo.SelectedIndex == 1 ? "process" : "smartcapture"; if (v != ini.Get("PauseTarget", "smartcapture")) { ini.Set("PauseTarget", v); iniDirty = true; } });
 
+            // On pause-exit fallback (only used when there is NO custom AHK exit script): what to force-kill
+            // and after how many grace seconds. A per-emulator / per-game override still wins over this global.
+            int exkY = tgY + 88;
+            p.Controls.Add(new Label { Text = "On pause-exit if there is no AHK script:", Location = new Point(S(12), S(exkY)), AutoSize = true, ForeColor = LbxAccent, BackColor = Bg, Font = new Font("Segoe UI", 8.5f, FontStyle.Bold) });
+            var exkItems = new[] { "Do nothing (leave the game to close itself)", "Kill the SmartCapture-detected game (fallback: emulator/app)", "Kill the emulator / app process" };
+            var (exkModeCur, exkSecCur) = Gameplay.GameplaySettings.PauseExitKillGlobal();
+            string exkSel = exkModeCur == "none" ? exkItems[0] : exkModeCur == "process" ? exkItems[2] : exkItems[1];
+            var exkCbo = Cbo(exkItems, exkSel, new Point(S(12), S(exkY + 24)), 430); p.Controls.Add(exkCbo);
+            p.Controls.Add(Lbl("after", new Point(S(452), S(exkY + 27))));
+            var exkSec = Txt(exkSecCur.ToString(), new Point(S(492), S(exkY + 24)), 48); p.Controls.Add(exkSec);
+            p.Controls.Add(Lbl("sec", new Point(S(546), S(exkY + 27))));
+            p.Controls.Add(Lbl("Give the graceful exit key that long, then force-kill (or not). A per-emulator / per-game override still wins.", new Point(S(30), S(exkY + 52)), Dim));
+            void ExkSyncEnable() => exkSec.Enabled = !readOnly && exkCbo.SelectedIndex != 0;
+            exkCbo.SelectedIndexChanged += (_, _) => ExkSyncEnable();
+            ExkSyncEnable();
+            applies.Add(() =>
+            {
+                string mode = exkCbo.SelectedIndex == 0 ? "none" : exkCbo.SelectedIndex == 2 ? "process" : "smartcapture";
+                int sec = int.TryParse(exkSec.Text, out var sv) ? Math.Max(0, Math.Min(600, sv)) : Gameplay.GameplaySettings.PauseExitKillDefaultSeconds;
+                string v = mode == "none" ? "none" : mode + ":" + sec.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                string cur = ini.Get("PauseExitKill", Gameplay.GameplaySettings.PauseExitKillDefaultMode + ":" + Gameplay.GameplaySettings.PauseExitKillDefaultSeconds) ?? "";
+                if (v != cur) { ini.Set("PauseExitKill", v); iniDirty = true; }
+            });
+
             // Non-emulator pause defaults (store / direct-exe / DOSBox have no emulator to source them from).
-            int neY = tgY + 92;
+            int neY = exkY + 84;
             p.Controls.Add(Head("Non-emulator games (Store / direct .exe / DOSBox)", neY));
             var neUse = Chk("Use the pause screen", ini.GetBool("NonEmuUsePauseScreen", true), new Point(S(12), S(neY + 26)));
             var neSusp = Chk("Suspend (freeze) the process on pause", ini.GetBool("NonEmuSuspendOnPause", true), new Point(S(12), S(neY + 52)));

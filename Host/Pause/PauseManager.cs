@@ -497,14 +497,23 @@ internal static class PauseManager
         }
         else
         {
-            // Default path (Send {Escape}, or a non-emulator game with no script): give it a moment, then
-            // force-kill the whole tree if it's still up — nothing is responsible for a graceful close.
-            try { graceful = _proc!.WaitForExit(5000); } catch { }
-            if (graceful) Console.WriteLine("[pause] emulator closed by the default exit key");
+            // Default path (Send {Escape}, or a non-emulator game with no script): nothing is responsible for
+            // a graceful close, so apply the configurable "on pause-exit" rule (mode + grace seconds), resolved
+            // game → emulator → global. Give the exit key that long, then force-kill the resolved target's whole
+            // tree — or, in "none" mode, leave the game to close itself (never force-kill).
+            var (killMode, killSec) = Gameplay.GameplaySettings.ResolvePauseExitKill(emuId, gid);
+            if (string.Equals(killMode, "none", StringComparison.OrdinalIgnoreCase))
+                Console.WriteLine("[pause] on pause-exit = do nothing — leaving the game to close itself");
             else
             {
-                try { if (_proc is { HasExited: false }) { _proc.Kill(entireProcessTree: true); Console.WriteLine("[pause] emulator killed"); } }
-                catch (Exception ex) { Console.WriteLine("[pause] kill failed: " + ex.Message); }
+                try { graceful = _proc!.WaitForExit(Math.Max(0, killSec) * 1000); } catch { }
+                if (graceful) Console.WriteLine("[pause] emulator closed by the default exit key");
+                else
+                {
+                    bool killProc = string.Equals(killMode, "process", StringComparison.OrdinalIgnoreCase);
+                    int killPid = killProc ? (Safe(() => _proc?.Id) ?? 0) : SmartCaptureGamePid();
+                    KillTreeByPid(killPid, killMode);
+                }
             }
         }
         // HostLaunch's WaitForExit returns → its finally runs Disarm + cleanup.
@@ -531,6 +540,33 @@ internal static class PauseManager
     private static bool PauseFreezeTree()
         => Data.LiteBoxOption.ResolveBool("PauseFreezeTree", Safe(() => _emu?.Id),
             Gameplay.GameplaySettings.PauseFreezeTreeGlobal(), Safe(() => _game?.Id));
+
+    /// <summary>The SmartCapture-detected game window's owning PID (its real render process — right for store
+    /// games and launcher→game hand-offs), falling back to the launched process when nothing was detected.
+    /// Used by the "kill the SmartCapture game" on-exit mode. Unlike <see cref="PauseTargetPid"/> it is NOT
+    /// gated on the PauseTarget option — this mode always means the detected game.</summary>
+    private static int SmartCaptureGamePid()
+    {
+        try
+        {
+            var hwnd = Gameplay.SmartCapture.DetectedGameWindow;
+            if (hwnd != IntPtr.Zero) { GetWindowThreadProcessId(hwnd, out uint wpid); if (wpid != 0) return (int)wpid; }
+        }
+        catch { }
+        try { return _proc?.Id ?? 0; } catch { return 0; }
+    }
+
+    /// <summary>Force-kill <paramref name="pid"/> and its whole process tree (the on pause-exit fallback).</summary>
+    private static void KillTreeByPid(int pid, string modeLabel)
+    {
+        if (pid <= 0) { Console.WriteLine($"[pause] on pause-exit ({modeLabel}): no target pid to kill"); return; }
+        try
+        {
+            var pr = Process.GetProcessById(pid);
+            if (!pr.HasExited) { pr.Kill(entireProcessTree: true); Console.WriteLine($"[pause] on pause-exit ({modeLabel}) killed pid={pid} (tree)"); }
+        }
+        catch (Exception ex) { Console.WriteLine($"[pause] on pause-exit kill pid={pid} failed: " + ex.Message); }
+    }
 
     /// <summary>Every descendant PID of <paramref name="root"/> (Toolhelp parent-PID walk).</summary>
     private static System.Collections.Generic.List<int> DescendantPids(int root)
