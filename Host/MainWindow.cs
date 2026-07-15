@@ -4042,9 +4042,20 @@ internal sealed class MainWindow : Form, IMessageFilter
         catch { return new List<IEmulator>(); }
     }
 
+    /// <summary>Additional applications a user could actually LAUNCH — every consumer here (the Play ▾
+    /// version dropdown, the right-click "Play Version" submenu, the per-version emulator picker) means
+    /// "playable version," not "every additional-application record." Documents (Edit Game → Documents
+    /// tab; Section=="Document") are additional-application records too, but they're manuals/guides to
+    /// open, not versions of the game — excluded here so they don't show up as a bogus playable "version"
+    /// that tries to launch the document file as if it were the game.</summary>
     private static IAdditionalApplication[] SafeAddApps(IGame g)
     {
-        try { return g.GetAllAdditionalApplications() ?? Array.Empty<IAdditionalApplication>(); }
+        try
+        {
+            var all = g.GetAllAdditionalApplications();
+            if (all == null) return Array.Empty<IAdditionalApplication>();
+            return all.Where(a => a is not HostAdditionalApplication { IsDocument: true }).ToArray();
+        }
         catch { return Array.Empty<IAdditionalApplication>(); }
     }
 
