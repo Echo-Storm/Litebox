@@ -212,12 +212,30 @@ internal static class HostBoot
         Gameplay.GameScreens.Configure(lbRoot);    // startup ("NOW LOADING…") + end ("GAME OVER") screens
         Gameplay.ScreenCapture.Configure(lbRoot);  // screenshot hotkey
         EmuPlugins.Configure(reg);   // emulator-integration plugins (RetroArch/Dolphin/… DLLs)
-        // Warm up the integration plugins ONCE, on THIS thread: the first call into a plugin
-        // JIT-compiles obfuscated core code, which initializes the core's method-body decryptor.
-        // Doing it here — serially, before any UI or scan thread exists — makes that fragile init
-        // deterministic instead of racing (see EmuPlugins.CallGate). Also pre-fills the
-        // plugin-per-emulator cache the UI reads on every selection.
-        try { foreach (var e in dm.GetAllEmulators() ?? Array.Empty<IEmulator>()) EmuPlugins.ForEmulator(e); }
+        // Warm up the integration plugins. The FIRST call into a plugin JIT-compiles obfuscated core
+        // code, which initializes the core's method-body decryptor — doing THAT one here, serially, on
+        // this thread, before any UI or scan thread exists, makes that fragile init deterministic
+        // instead of racing (see EmuPlugins.CallGate). Every call after the first is just pre-filling
+        // the plugin-per-emulator cache the UI reads on every selection — CallGate already serializes
+        // concurrent plugin calls from any thread, so those are safe to run in the background instead of
+        // blocking the window from appearing behind N emulators × M plugins of warm-up.
+        try
+        {
+            var emus = dm.GetAllEmulators() ?? Array.Empty<IEmulator>();
+            if (emus.Length > 0)
+            {
+                EmuPlugins.ForEmulator(emus[0]);
+                if (emus.Length > 1)
+                {
+                    var rest = emus.Skip(1).ToArray();
+                    System.Threading.Tasks.Task.Run(() =>
+                    {
+                        foreach (var e in rest)
+                        { try { EmuPlugins.ForEmulator(e); } catch (Exception ex) { Console.WriteLine("[emuplugin] background warmup failed: " + ex.Message); } }
+                    });
+                }
+            }
+        }
         catch (Exception ex) { Console.WriteLine("[emuplugin] warmup failed: " + ex.Message); }
         DependencyCheck.Configure(LiteBoxConfig.LoadForExe(), lbRoot);   // pre-launch bios/dependency check
 
