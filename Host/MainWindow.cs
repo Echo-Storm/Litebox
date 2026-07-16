@@ -118,6 +118,11 @@ internal sealed class MainWindow : Form, IMessageFilter
     private int PZ(int px) => (int)Math.Round(px * _zoom);           // scale a tile-internal offset by zoom
     private Font _posterTileFont;                                    // MainWindow.Font × zoom, for tile title/dev text
     private readonly ToolStripTextBox _search;
+    // Debounces the search box: ApplyFilter → RebuildView → MeasureContentFits re-scans every row of the
+    // (possibly ~15000-row) view to re-fit non-stretch columns, otherwise on EVERY keystroke — wasted CPU +
+    // input latency near that library size. 150ms feels instant once typing pauses, yet collapses a fast
+    // typist's whole word into one measure pass.
+    private readonly System.Windows.Forms.Timer _searchDebounce = new() { Interval = 150 };
     private readonly ToolStripComboBox _sortCombo;
     private readonly ToolStripButton _dirBtn;
     private readonly ToolStripLabel _count;
@@ -309,7 +314,8 @@ internal sealed class MainWindow : Form, IMessageFilter
             AutoSize = false, Width = 240, BorderStyle = BorderStyle.FixedSingle,
             BackColor = Panel, ForeColor = Fg,
         };
-        _search.TextChanged += (_, _) => ApplyFilter();
+        _searchDebounce.Tick += (_, _) => { _searchDebounce.Stop(); ApplyFilter(); };
+        _search.TextChanged += (_, _) => { _searchDebounce.Stop(); _searchDebounce.Start(); };
         bar.Items.Add(_search);
         bar.Items.Add(new ToolStripSeparator());
 
@@ -1608,20 +1614,31 @@ internal sealed class MainWindow : Form, IMessageFilter
 
     private Control BuildCachesSection()
     {
+        // FlowLayoutPanel (TopDown), not fixed Locations — same overlap bug/fix as BuildUninstallSection: `desc`
+        // wraps to however many lines its actual text needs, so a hardcoded Y for `size`/`btn` below it baked in
+        // an assumed height the real wrapped text can exceed (worse at higher DPI / larger fonts).
+        float dpiS = LiteBoxTheme.DpiScale(this);
+        int S(int px) => (int)Math.Round(px * dpiS);
+
         var p = new Panel { BackColor = Bg, AutoScroll = true };
-        var title = new Label { Text = "Achievements cache", Location = new Point(4, 8), AutoSize = true, ForeColor = Fg, BackColor = Bg, Font = new Font("Segoe UI", 9.75f, FontStyle.Bold) };
+        var flow = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink, BackColor = Bg, Padding = new Padding(S(4), S(8), S(4), 0),
+        };
+        var title = new Label { Text = "Achievements cache", AutoSize = true, ForeColor = Fg, BackColor = Bg, Font = new Font("Segoe UI", 9.75f, FontStyle.Bold), Margin = new Padding(0, 0, 0, S(8)) };
         var desc = new Label
         {
             Text = "RetroAchievements + GOG/Steam achievement data and downloaded badge images "
                  + "(Core\\ra-cache, ra-badges, store-ach-cache, store-ach-badges). Clearing forces a fresh "
                  + "fetch the next time you view a game.",
-            Location = new Point(4, 32), AutoSize = true, MaximumSize = new Size(560, 0), ForeColor = SubFg, BackColor = Bg,
-            Font = new Font("Segoe UI", 8.5f),
+            AutoSize = true, MaximumSize = new Size(S(560), 0), ForeColor = SubFg, BackColor = Bg,
+            Font = new Font("Segoe UI", 8.5f), Margin = new Padding(0, 0, 0, S(16)),
         };
-        var size = new Label { Location = new Point(4, 84), AutoSize = true, ForeColor = Fg, BackColor = Bg };
+        var size = new Label { AutoSize = true, ForeColor = Fg, BackColor = Bg, Margin = new Padding(0, 0, 0, S(8)) };
         var btn = new Button
         {
-            Text = "Clear achievements cache", Location = new Point(4, 108), Size = new Size(210, 28),
+            Text = "Clear achievements cache", AutoSize = false, Size = new Size(S(210), S(28)), Margin = new Padding(0),
             FlatStyle = FlatStyle.Flat, BackColor = Panel2, ForeColor = Fg, FlatAppearance = { BorderSize = 0 },
             Font = new Font("Segoe UI", 9f),
         };
@@ -1646,29 +1663,43 @@ internal sealed class MainWindow : Form, IMessageFilter
             try { var g = _games?.SelectedGame; if (g != null) ScheduleMedia(g); } catch { }
         };
         RefreshSize();
-        p.Controls.Add(title); p.Controls.Add(desc); p.Controls.Add(size); p.Controls.Add(btn);
+        flow.Controls.Add(title); flow.Controls.Add(desc); flow.Controls.Add(size); flow.Controls.Add(btn);
+        p.Controls.Add(flow);
         return p;
     }
 
     // Full self-uninstall (Options → Uninstall LiteBox). Red button + confirmation → detached .bat.
     private Control BuildUninstallSection()
     {
+        // FlowLayoutPanel (TopDown), not fixed Locations: `desc` wraps to however many lines its actual text
+        // needs (MaximumSize.Width forces the wrap, AutoSize grows the height to fit) — a fixed Y for cbThumbs
+        // below it baked in an assumed height that the real wrapped text (3 lines at normal DPI, more at higher
+        // DPI / larger fonts) exceeds, so it silently overlapped the description. Same bug class as the original
+        // OptionsWindow overlap; same fix (derive layout from live PreferredSize) + DPI-scale the pixel sizes.
+        float dpiS = LiteBoxTheme.DpiScale(this);
+        int S(int px) => (int)Math.Round(px * dpiS);
+
         var p = new Panel { BackColor = Bg, AutoScroll = true };
-        var title = new Label { Text = "Uninstall LiteBox", Location = new Point(4, 8), AutoSize = true, ForeColor = Fg, BackColor = Bg, Font = new Font("Segoe UI", 9.75f, FontStyle.Bold) };
+        var flow = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink, BackColor = Bg, Padding = new Padding(S(4), S(8), S(4), 0),
+        };
+        var title = new Label { Text = "Uninstall LiteBox", AutoSize = true, ForeColor = Fg, BackColor = Bg, Font = new Font("Segoe UI", 9.75f, FontStyle.Bold), Margin = new Padding(0, 0, 0, S(8)) };
         var desc = new Label
         {
             Text = "Removes LiteBox completely: LiteBox.exe (Core + root re-launcher), the Core\\litebox\\ data "
                  + "folder, and ThirdParty\\Steam. The ExtendDB plugin and the ThirdParty tools it shares are "
                  + "left untouched unless you tick a box below.",
-            Location = new Point(4, 32), AutoSize = true, MaximumSize = new Size(560, 0), ForeColor = SubFg, BackColor = Bg,
-            Font = new Font("Segoe UI", 8.5f),
+            AutoSize = true, MaximumSize = new Size(S(560), 0), ForeColor = SubFg, BackColor = Bg,
+            Font = new Font("Segoe UI", 8.5f), Margin = new Padding(0, 0, 0, S(16)),
         };
-        var cbThumbs = new CheckBox { Text = "Also delete the shared thumbnail cache (Plugins\\ExtendDB\\cache\\thumbs)", Location = new Point(4, 92), AutoSize = true, ForeColor = Fg, BackColor = Bg, Font = new Font("Segoe UI", 8.5f) };
-        var cbTp = new CheckBox { Text = "Also remove the shared ThirdParty tools (Everything, ImageMagick, RAHasher)", Location = new Point(4, 116), AutoSize = true, ForeColor = Fg, BackColor = Bg, Font = new Font("Segoe UI", 8.5f) };
-        var shareNote = new Label { Text = "Both are shared with ExtendDB, which re-creates them on its next run.", Location = new Point(22, 140), AutoSize = true, ForeColor = SubFg, BackColor = Bg, Font = new Font("Segoe UI", 8f) };
+        var cbThumbs = new CheckBox { Text = "Also delete the shared thumbnail cache (Plugins\\ExtendDB\\cache\\thumbs)", AutoSize = true, ForeColor = Fg, BackColor = Bg, Font = new Font("Segoe UI", 8.5f), Margin = new Padding(0, 0, 0, S(4)) };
+        var cbTp = new CheckBox { Text = "Also remove the shared ThirdParty tools (Everything, ImageMagick, RAHasher)", AutoSize = true, ForeColor = Fg, BackColor = Bg, Font = new Font("Segoe UI", 8.5f), Margin = new Padding(0, 0, 0, S(4)) };
+        var shareNote = new Label { Text = "Both are shared with ExtendDB, which re-creates them on its next run.", AutoSize = true, ForeColor = SubFg, BackColor = Bg, Font = new Font("Segoe UI", 8f), Margin = new Padding(S(18), 0, 0, S(32)) };
         var btn = new Button
         {
-            Text = "Uninstall LiteBox", Location = new Point(4, 172), Size = new Size(210, 32),
+            Text = "Uninstall LiteBox", AutoSize = false, Size = new Size(S(210), S(32)), Margin = new Padding(0),
             FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(150, 40, 40), ForeColor = Color.White,
             FlatAppearance = { BorderSize = 0 }, Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
         };
@@ -1683,7 +1714,8 @@ internal sealed class MainWindow : Form, IMessageFilter
             try { Install.Uninstaller.RunSelfUninstall(cbThumbs.Checked, cbTp.Checked); }   // launches the bat + exits
             catch (Exception ex) { MessageBox.Show(p.FindForm(), "Uninstall failed to start: " + ex.Message, "LiteBox", MessageBoxButtons.OK, MessageBoxIcon.Error); }
         };
-        p.Controls.Add(title); p.Controls.Add(desc); p.Controls.Add(cbThumbs); p.Controls.Add(cbTp); p.Controls.Add(shareNote); p.Controls.Add(btn);
+        flow.Controls.Add(title); flow.Controls.Add(desc); flow.Controls.Add(cbThumbs); flow.Controls.Add(cbTp); flow.Controls.Add(shareNote); flow.Controls.Add(btn);
+        p.Controls.Add(flow);
         return p;
     }
 
@@ -4042,9 +4074,21 @@ internal sealed class MainWindow : Form, IMessageFilter
         catch { return new List<IEmulator>(); }
     }
 
+    /// <summary>Additional applications a user could actually LAUNCH — every consumer here (the Play ▾ version
+    /// dropdown, the right-click "Play Version" submenu, the per-version emulator picker) means "playable
+    /// version," not "every additional-application record." Documents (Edit Game → Documents tab;
+    /// Section=="Document") are additional-application records too, but they're manuals/guides to open, not
+    /// versions of the game — excluded here so they don't show up as a bogus playable "version" that would try
+    /// to launch the document file as if it were the game. (LaunchBox itself surfaces them under Media →
+    /// Additional Documents, never as a version, so this matches native behaviour.)</summary>
     private static IAdditionalApplication[] SafeAddApps(IGame g)
     {
-        try { return g.GetAllAdditionalApplications() ?? Array.Empty<IAdditionalApplication>(); }
+        try
+        {
+            var all = g.GetAllAdditionalApplications();
+            if (all == null) return Array.Empty<IAdditionalApplication>();
+            return all.Where(a => a is not Data.HostAdditionalApplication { IsDocument: true }).ToArray();
+        }
         catch { return Array.Empty<IAdditionalApplication>(); }
     }
 

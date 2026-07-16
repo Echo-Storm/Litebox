@@ -205,6 +205,32 @@ internal sealed partial class EditGameWindow
         }
     }
 
+    /// <summary>DOSBox and an emulator are mutually exclusive — the solo pages enforce it interactively
+    /// (ConfirmDosBoxVsEmulation on checking DOSBox; "enable emulator ⇒ DOSBox off" when picking one), but those
+    /// guards are <c>!IsMulti</c>, so a multi session that sets DOSBox on one page and an emulator on another could
+    /// otherwise leave a game with BOTH — a state solo never allows. Re-assert the invariant at save, DIRECTIONALLY,
+    /// mirroring the solo rules: whatever the user actually changed THIS session wins — assigning an emulator turns
+    /// DOSBox off (solo's automatic behaviour), checking DOSBox clears the emulator (solo's confirm-and-clear). If
+    /// neither field was touched, leave pre-existing states alone; if BOTH were changed (contradictory), DOSBox wins
+    /// (the solo DOSBox note's stated behaviour). Writes via SetField, like the other multi writes, for one persistence path.</summary>
+    private void EnforceDosBoxEmulatorExclusivityMulti()
+    {
+        bool dosCheckedNow = _lchUseDos is { Checked: true } && Modified(_lchUseDos);
+        bool emuAssignedNow = _lchEmuCombo != null && Modified(_lchEmuCombo) && !IsPlaceholder(_lchEmuCombo)
+                              && SelectedEmulatorId() is { Length: > 0 } sid && sid != LchMultiEmuId;
+        if (!dosCheckedNow && !emuAssignedNow) return;   // nothing exclusivity-relevant changed → touch nothing
+        foreach (var g in _editGames)
+        {
+            try
+            {
+                if (!g.UseDosBox || string.IsNullOrEmpty(g.EmulatorId)) continue;   // only the invalid both-set state
+                if (dosCheckedNow) (g as ILiteBoxFields)?.SetField("Emulator", "");            // DOSBox wins → clear the emulator
+                else               (g as ILiteBoxFields)?.SetField("UseDosBox", LchB(false));  // emulator wins → DOSBox off
+            }
+            catch { }
+        }
+    }
+
     /// <summary>Write a tracked launching field to EVERY edited game when it was actually changed and isn't the
     /// "‹multiple values›" placeholder, then re-baseline it (a re-save becomes a no-op). Mirrors SaveCurrent.</summary>
     private void WriteLch(TextBox? t, string field)
@@ -808,7 +834,11 @@ internal sealed partial class EditGameWindow
         LchTrackChk3(_lchCustomCmdChk, IsMulti ? LchMergeBool(HasCmd) : (bool?)null, LchGet("CommandLine").Trim().Length > 0, p);
         _lchCustomCmdChk.CheckedChanged += (_, _) => UpdateLaunchingEnablement();
         y += S(26);
-        _lchCustomCmd = LchTxt(p, LchVal("CommandLine", g => g.CommandLine), ref y, out _);
+        // Seed from the Launching page's LIVE textbox when it is already built, not from LchVal / the game's
+        // stored value — pages are built lazily and cached, so if the user already typed into _lchCmd before
+        // ever opening this tab, re-reading from the game here would silently drop that pending edit (this page's
+        // mirror below would then overwrite _lchCmd with the stale re-read the moment _lchCustomCmd is touched).
+        _lchCustomCmd = LchTxt(p, _lchCmd?.Text ?? LchVal("CommandLine", g => g.CommandLine), ref y, out _);
         _lchCustomCmd.TextChanged += (_, _) => { if (_lchCmd != null && !_lchCmd.Focused) _lchCmd.Text = _lchCustomCmd.Text; };
         LchTrack(_lchCustomCmd);   // revert + modified colour + merge (mirrors the main Launching CommandLine)
 
@@ -973,57 +1003,13 @@ internal sealed partial class EditGameWindow
         // Modal-LOCAL dirty tracking (the window's _fields/_baseline belong to the persistent pages, not this
         // transient dialog). Multi: a checkbox is 3-state (Indeterminate = the games differ); a click only
         // toggles Checked↔Unchecked; a ↺ reverts to the differ/baseline. mVals = what OK writes (null = skip).
+        // The mechanics (ModalVal/ModalRefresh/ModalRevertButton/ModalChk) are shared with the Pause dialog.
         var mBase = new Dictionary<Control, string>();
         var mRev = new Dictionary<Control, Button>();
         var mVals = new List<Func<(string field, string? value)>>();
-        string MVal(Control c) => c is CheckBox cb ? cb.CheckState.ToString() : "";
-        void MRefresh(Control c)
-        {
-            bool mod = mBase.TryGetValue(c, out var b) && b != MVal(c);
-            c.ForeColor = mod ? ModifiedColor : Fg;
-            if (mRev.TryGetValue(c, out var rb)) rb.Visible = mod && !_readOnly;
-        }
-        Button MRevBtn(Action onClick, Point loc)
-        {
-            var rb = new Button { Text = "↺", Size = new Size(S(18), S(18)), Location = loc, Visible = false, TabStop = false, Cursor = Cursors.Hand, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(92, 46, 42), ForeColor = Color.FromArgb(255, 180, 165), Font = new Font("Segoe UI Symbol", 9.5f), FlatAppearance = { BorderSize = 1 } };
-            rb.FlatAppearance.BorderColor = Color.FromArgb(150, 72, 64);
-            rb.Click += (_, _) => onClick();
-            return rb;
-        }
-
         // get(g) = the game's raw field value; `invert` shows its opposite (Enable Shutdown = !DisableShutdown).
-        // Multi → 3-state. On OK: solo always writes; multi writes only when definite (not Indeterminate) AND changed.
         CheckBox Chk(string text, string field, bool invert, int cx, int cy, Func<IGame, bool> get)
-        {
-            var cb = new CheckBox { Text = text, AutoSize = true, Location = new Point(cx, cy), ForeColor = Fg, BackColor = Bg, Enabled = !_readOnly };
-            if (IsMulti)
-            {
-                var m = LchMergeBool(g => invert ? !get(g) : get(g));
-                cb.ThreeState = true;
-                cb.CheckState = m.HasValue ? (m.Value ? CheckState.Checked : CheckState.Unchecked) : CheckState.Indeterminate;
-                cb.AutoCheck = false;
-                cb.Click += (_, _) => { if (!_readOnly) cb.CheckState = cb.CheckState == CheckState.Checked ? CheckState.Unchecked : CheckState.Checked; };
-            }
-            else { bool v = LchBool(LchGet(field)); cb.Checked = invert ? !v : v; }
-            host.Controls.Add(cb);
-            cb.CheckStateChanged += (_, _) => MRefresh(cb);
-            mBase[cb] = MVal(cb);
-            if (IsMulti)
-            {
-                int rx = cx + S(22) + TextRenderer.MeasureText(cb.Text, cb.Font).Width + S(6);
-                var rb = MRevBtn(() => { cb.CheckState = mBase.TryGetValue(cb, out var b) && Enum.TryParse<CheckState>(b, out var cs) ? cs : CheckState.Indeterminate; MRefresh(cb); }, new Point(rx, cy - S(1)));
-                host.Controls.Add(rb); rb.BringToFront(); mRev[cb] = rb;
-            }
-            MRefresh(cb);
-            mVals.Add(() =>
-            {
-                if (cb.CheckState == CheckState.Indeterminate) return (field, null);
-                if (!(mBase.TryGetValue(cb, out var b) && b != MVal(cb))) return (field, null);   // only write what the user CHANGED
-                bool stored = invert ? !cb.Checked : cb.Checked;
-                return (field, LchB(stored));
-            });
-            return cb;
-        }
+            => ModalChk(host, mBase, mRev, mVals, text, field, invert, cx, cy, get);
         Chk("Enable Game Startup Screen", "UseStartupScreen", false, x, y, g => g.UseStartupScreen);
         // Bound directly to the raw field (NOT the inverted "Enable Shutdown") so a fresh game — where every
         // field is false — shows every box UNCHECKED. Unchecked = DisableShutdownScreen false = shutdown stays
@@ -1081,7 +1067,7 @@ internal sealed partial class EditGameWindow
             bar.ValueChanged += (_, _) => { touched = true; Paint(); };
             if (IsMulti)
             {
-                rb = MRevBtn(() => { bar.Value = val; touched = false; Paint(); }, new Point(x + S(626), sy + S(2)));
+                rb = ModalRevertButton(() => { bar.Value = val; touched = false; Paint(); }, new Point(x + S(626), sy + S(2)));
                 host.Controls.Add(rb); rb.BringToFront();
             }
             Paint();
@@ -1155,24 +1141,90 @@ internal sealed partial class EditGameWindow
     /// footer so the footer claims the bottom).</summary>
     private (TabControl tabs, TabPage main, TabPage lbx) DialogTabs(Form f, string mainTitle)
     {
-        var tabs = new TabControl
-        {
-            Dock = DockStyle.Fill, DrawMode = TabDrawMode.OwnerDrawFixed, SizeMode = TabSizeMode.Fixed,
-            ItemSize = new Size(S(120), S(24)),
-        };
-        tabs.DrawItem += (_, e) =>
-        {
-            bool sel = e.Index == tabs.SelectedIndex;
-            using var b = new SolidBrush(sel ? Field : PanelC);
-            e.Graphics.FillRectangle(b, e.Bounds);
-            TextRenderer.DrawText(e.Graphics, tabs.TabPages[e.Index].Text, f.Font, e.Bounds,
-                sel ? Color.White : SubFg, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
-        };
+        var tabs = new TabControl { Dock = DockStyle.Fill, ItemSize = new Size(S(120), S(24)) };
+        StyleDarkTabs(tabs, f);
         var main = new TabPage(mainTitle) { BackColor = Bg, UseVisualStyleBackColor = false };
         var lbx = new TabPage("LiteBox") { BackColor = Bg, UseVisualStyleBackColor = false };
         tabs.TabPages.Add(main); tabs.TabPages.Add(lbx);
         f.Controls.Add(tabs);   // Fill added first; the Bottom footer (added later) claims its strip
         return (tabs, main, lbx);
+    }
+
+    /// <summary>The dark owner-drawn tab paint used by every TabControl in these Customize dialogs — the outer
+    /// strip built by DialogTabs above, and the AutoHotkey-script sub-tabs in ShowPauseCustomizeDialog. Sets
+    /// DrawMode/SizeMode too, so a caller only needs its own Size/Location/ItemSize/Anchor.</summary>
+    private void StyleDarkTabs(TabControl t, Form f)
+    {
+        t.DrawMode = TabDrawMode.OwnerDrawFixed;
+        t.SizeMode = TabSizeMode.Fixed;
+        t.DrawItem += (_, e) =>
+        {
+            bool sel = e.Index == t.SelectedIndex;
+            using var b = new SolidBrush(sel ? Field : PanelC);
+            e.Graphics.FillRectangle(b, e.Bounds);
+            TextRenderer.DrawText(e.Graphics, t.TabPages[e.Index].Text, f.Font, e.Bounds,
+                sel ? Color.White : SubFg, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+        };
+    }
+
+    // ── Shared modal-local dirty-tracking for the two Customize dialogs' fields ─────────────────
+    // Both dialogs keep their OWN mBase/mRev/mVals per-invocation state (a transient dialog, not the window's
+    // persistent _fields/_baseline) but the mechanics — read a control's comparable value, repaint it
+    // modified/clean + toggle its revert button, build a consistently-styled revert button, and build a
+    // 3-state multi-aware checkbox wired into all of that — were previously copy-pasted whole between them.
+
+    private static string ModalVal(Control c) => c is CheckBox cb ? cb.CheckState.ToString() : "";
+
+    private void ModalRefresh(Control c, Dictionary<Control, string> mBase, Dictionary<Control, Button> mRev)
+    {
+        bool mod = mBase.TryGetValue(c, out var b) && b != ModalVal(c);
+        c.ForeColor = mod ? ModifiedColor : Fg;
+        if (mRev.TryGetValue(c, out var rb)) rb.Visible = mod && !_readOnly;
+    }
+
+    private Button ModalRevertButton(Action onClick, Point loc)
+    {
+        var rb = new Button { Text = "↺", Size = new Size(S(18), S(18)), Location = loc, Visible = false, TabStop = false, Cursor = Cursors.Hand, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(92, 46, 42), ForeColor = Color.FromArgb(255, 180, 165), Font = new Font("Segoe UI Symbol", 9.5f), FlatAppearance = { BorderSize = 1 } };
+        rb.FlatAppearance.BorderColor = Color.FromArgb(150, 72, 64);
+        rb.Click += (_, _) => onClick();
+        return rb;
+    }
+
+    /// <summary>A 3-state (multi) / plain (solo) checkbox wired into the given dialog's mBase/mRev/mVals —
+    /// get(g) = the game's raw field value; invert shows its opposite (e.g. Enable Shutdown = !DisableShutdown).
+    /// Multi → 3-state (Indeterminate = the games differ), with a ↺ that reverts to that baseline. On OK: solo
+    /// always writes via mVals; multi writes only when definite (not Indeterminate) AND changed.</summary>
+    private CheckBox ModalChk(Panel host, Dictionary<Control, string> mBase, Dictionary<Control, Button> mRev,
+        List<Func<(string field, string? value)>> mVals, string text, string field, bool invert, int cx, int cy, Func<IGame, bool> get)
+    {
+        var cb = new CheckBox { Text = text, AutoSize = true, Location = new Point(cx, cy), ForeColor = Fg, BackColor = Bg, Enabled = !_readOnly };
+        if (IsMulti)
+        {
+            var m = LchMergeBool(g => invert ? !get(g) : get(g));
+            cb.ThreeState = true;
+            cb.CheckState = m.HasValue ? (m.Value ? CheckState.Checked : CheckState.Unchecked) : CheckState.Indeterminate;
+            cb.AutoCheck = false;
+            cb.Click += (_, _) => { if (!_readOnly) cb.CheckState = cb.CheckState == CheckState.Checked ? CheckState.Unchecked : CheckState.Checked; };
+        }
+        else { bool v = LchBool(LchGet(field)); cb.Checked = invert ? !v : v; }
+        host.Controls.Add(cb);
+        cb.CheckStateChanged += (_, _) => ModalRefresh(cb, mBase, mRev);
+        mBase[cb] = ModalVal(cb);
+        if (IsMulti)
+        {
+            int rx = cx + S(22) + TextRenderer.MeasureText(cb.Text, cb.Font).Width + S(6);
+            var rb = ModalRevertButton(() => { cb.CheckState = mBase.TryGetValue(cb, out var b) && Enum.TryParse<CheckState>(b, out var cs) ? cs : CheckState.Indeterminate; ModalRefresh(cb, mBase, mRev); }, new Point(rx, cy - S(1)));
+            host.Controls.Add(rb); rb.BringToFront(); mRev[cb] = rb;
+        }
+        ModalRefresh(cb, mBase, mRev);
+        mVals.Add(() =>
+        {
+            if (cb.CheckState == CheckState.Indeterminate) return (field, null);
+            if (!(mBase.TryGetValue(cb, out var b) && b != ModalVal(cb))) return (field, null);   // only write what the user CHANGED
+            bool stored = invert ? !cb.Checked : cb.Checked;
+            return (field, LchB(stored));
+        });
+        return cb;
     }
 
     private Panel DialogButtons(Form f, out Button ok, out Button cancel)
@@ -1201,56 +1253,14 @@ internal sealed partial class EditGameWindow
 
         int x = S(16), y = S(14);
 
-        // Modal-LOCAL dirty tracking (same pattern as the Startup modal). Multi: 3-state checkboxes + ↺; the
-        // AHK script boxes merge to "‹multiple values›". OK writes only what changed, to every edited game.
+        // Modal-LOCAL dirty tracking (same pattern as the Startup modal — shared via ModalVal/ModalRefresh/
+        // ModalRevertButton/ModalChk). Multi: 3-state checkboxes + ↺; the AHK script boxes merge to
+        // "‹multiple values›". OK writes only what changed, to every edited game.
         var mBase = new Dictionary<Control, string>();
         var mRev = new Dictionary<Control, Button>();
-        var mVals = new List<Func<(string field, string? value)>>();
-        string MVal(Control c) => c is CheckBox cb ? cb.CheckState.ToString() : "";
-        void MRefresh(Control c)
-        {
-            bool mod = mBase.TryGetValue(c, out var b) && b != MVal(c);
-            c.ForeColor = mod ? ModifiedColor : Fg;
-            if (mRev.TryGetValue(c, out var rb)) rb.Visible = mod && !_readOnly;
-        }
-        Button MRevBtn(Action onClick, Point loc)
-        {
-            var rb = new Button { Text = "↺", Size = new Size(S(18), S(18)), Location = loc, Visible = false, TabStop = false, Cursor = Cursors.Hand, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(92, 46, 42), ForeColor = Color.FromArgb(255, 180, 165), Font = new Font("Segoe UI Symbol", 9.5f), FlatAppearance = { BorderSize = 1 } };
-            rb.FlatAppearance.BorderColor = Color.FromArgb(150, 72, 64);
-            rb.Click += (_, _) => onClick();
-            return rb;
-        }
-        bool EF(IGame g, string fld) => LchBool((g as ILiteBoxFields)?.GetField(fld) ?? "");
+        var mVals = new List<Func<(string field, string? value)>>();        bool EF(IGame g, string fld) => LchBool((g as ILiteBoxFields)?.GetField(fld) ?? "");
         CheckBox Chk(string text, string field, int cx, int cy, Func<IGame, bool> get)
-        {
-            var cb = new CheckBox { Text = text, AutoSize = true, Location = new Point(cx, cy), ForeColor = Fg, BackColor = Bg, Enabled = !_readOnly };
-            if (IsMulti)
-            {
-                var m = LchMergeBool(get);
-                cb.ThreeState = true;
-                cb.CheckState = m.HasValue ? (m.Value ? CheckState.Checked : CheckState.Unchecked) : CheckState.Indeterminate;
-                cb.AutoCheck = false;
-                cb.Click += (_, _) => { if (!_readOnly) cb.CheckState = cb.CheckState == CheckState.Checked ? CheckState.Unchecked : CheckState.Checked; };
-            }
-            else cb.Checked = LchBool(LchGet(field));
-            host.Controls.Add(cb);
-            cb.CheckStateChanged += (_, _) => MRefresh(cb);
-            mBase[cb] = MVal(cb);
-            if (IsMulti)
-            {
-                int rx = cx + S(22) + TextRenderer.MeasureText(cb.Text, cb.Font).Width + S(6);
-                var rb = MRevBtn(() => { cb.CheckState = mBase.TryGetValue(cb, out var b) && Enum.TryParse<CheckState>(b, out var cs) ? cs : CheckState.Indeterminate; MRefresh(cb); }, new Point(rx, cy - S(1)));
-                host.Controls.Add(rb); rb.BringToFront(); mRev[cb] = rb;
-            }
-            MRefresh(cb);
-            mVals.Add(() =>
-            {
-                if (cb.CheckState == CheckState.Indeterminate) return (field, null);
-                if (!(mBase.TryGetValue(cb, out var b) && b != MVal(cb))) return (field, null);   // only write what CHANGED
-                return (field, LchB(cb.Checked));
-            });
-            return cb;
-        }
+            => ModalChk(host, mBase, mRev, mVals, text, field, false, cx, cy, get);
         Chk("Enable Game Pause Screen", "UsePauseScreen", x, y, g => EF(g, "UsePauseScreen"));
         Chk("Suspend Emulator Process While Paused", "SuspendProcessOnPause", S(360), y, g => EF(g, "SuspendProcessOnPause"));
         y += S(26);
@@ -1280,16 +1290,9 @@ internal sealed partial class EditGameWindow
         {
             Location = new Point(x, y), Size = new Size(S(650), S(226)),
             Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
-            DrawMode = TabDrawMode.OwnerDrawFixed, SizeMode = TabSizeMode.Fixed, ItemSize = new Size(S(92), S(24)),
+            ItemSize = new Size(S(92), S(24)),
         };
-        stabs.DrawItem += (_, e) =>
-        {
-            bool sel = e.Index == stabs.SelectedIndex;
-            using var b = new SolidBrush(sel ? Field : PanelC);
-            e.Graphics.FillRectangle(b, e.Bounds);
-            TextRenderer.DrawText(e.Graphics, stabs.TabPages[e.Index].Text, f.Font, e.Bounds,
-                sel ? Color.White : SubFg, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
-        };
+        StyleDarkTabs(stabs, f);
         foreach (var (title, field) in scriptTabs)
         {
             var page = new TabPage(title) { BackColor = Bg, UseVisualStyleBackColor = false };
@@ -1314,9 +1317,8 @@ internal sealed partial class EditGameWindow
             {
                 string baseTxt = tb.Text;
                 if (differ) tb.Enter += (_, _) => { if (tb.Text == Multi) tb.SelectAll(); };
-                var rb = new Button { Text = "↺", Size = new Size(S(18), S(18)), Location = new Point(S(628), S(2)), Anchor = AnchorStyles.Top | AnchorStyles.Right, Visible = false, TabStop = false, Cursor = Cursors.Hand, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(92, 46, 42), ForeColor = Color.FromArgb(255, 180, 165), Font = new Font("Segoe UI Symbol", 9.5f), FlatAppearance = { BorderSize = 1 } };
-                rb.FlatAppearance.BorderColor = Color.FromArgb(150, 72, 64);
-                rb.Click += (_, _) => { tb.Text = baseTxt; };
+                var rb = ModalRevertButton(() => { tb.Text = baseTxt; }, new Point(S(628), S(2)));
+                rb.Anchor = AnchorStyles.Top | AnchorStyles.Right;
                 tb.TextChanged += (_, _) => { touched = tb.Text != baseTxt; tb.ForeColor = tb.Text == Multi ? SubFg : (touched ? ModifiedColor : Fg); rb.Visible = touched && !_readOnly; };
                 page.Controls.Add(tb); page.Controls.Add(rb); rb.BringToFront();
             }
@@ -1471,6 +1473,7 @@ internal sealed partial class EditGameWindow
             WriteLch(_lchDosConf, "DosBoxConfigurationPath");
             WriteLch(_lchDosExe, "CustomDosBoxVersionPath");
             WriteEmulatorMulti();
+            EnforceDosBoxEmulatorExclusivityMulti();   // never leave a game with both DOSBox and an emulator
             WriteLch(_lchRoot, "RootFolder");
             // Startup/Pause override toggles (base window only; the Customize modals stay solo). Clearing the
             // per-game LiteBox overrides on an unchecked concern mirrors the solo save below.

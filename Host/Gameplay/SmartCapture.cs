@@ -20,6 +20,7 @@
 
 using System.Collections.Generic;
 using LbApiHost.Host.Diag;
+using Windows.Graphics.DirectX.Direct3D11;
 
 namespace LbApiHost.Host.Gameplay;
 
@@ -33,9 +34,9 @@ internal sealed class SmartCaptureConfig
     // • fps / size: each toggled independently; when BOTH on, Combine ("and"/"or") joins them.
     // • Nothing on at all (no title, no fps, no size) ⇒ fall back to the first NEW window (old "any").
     public bool UseFps = true;         // fps-test enabled
-    public bool UseSize;               // size-test enabled
+    public bool UseSize = true;        // size-test enabled
     public string Combine = "and";     // how fps & size join when BOTH on: "and" | "or"
-    public int MinFps = 10;
+    public int MinFps = 25;
     public int SustainMs = 600;
     public int MinSizePct = 50;
     public string Title = "";          // wildcard, "" = no title term
@@ -43,7 +44,8 @@ internal sealed class SmartCaptureConfig
     // Load Delay" (per-emulator/game), computed by GameplaySettings.RevealMaxMs and passed to Start().
     public bool ShowBorder;            // keep the yellow WGC capture border (hidden ini opt-in; default off)
     public bool StopOnWindowClose;     // end the session when the game WINDOW closes (else process exit)
-    public HashSet<string>? IgnoreExes; // exe filenames to skip (store clients) — resolved from the global blacklist
+    public HashSet<string>? IgnoreExes; // process exe/bat names to skip (store clients) — resolved from the blacklist
+    public List<string>? IgnoreTitles;  // window-title FRAGMENTS to skip (case-insensitive "contains", wildcard * ?)
     // Global-scan mode (store launches): the game isn't a descendant of anything we spawned, so instead
     // of a process tree we watch EVERY top-level window and keep only NEW ones — those not in Baseline
     // (the pre-launch snapshot) and not owned by LiteBox itself (cover / kiosk / main window).
@@ -100,7 +102,7 @@ internal static class SmartCapture
         Console.WriteLine($"[smartcapture] watching {(cfg.GlobalScan ? $"GLOBAL (baseline={cfg.Baseline?.Count ?? 0} pre-launch windows)" : $"tree(pid={rootPid})")} " +
                           $"title='{cfg.Title}'(OR-priority) fps={(cfg.UseFps ? $"on≥{cfg.MinFps}/{cfg.SustainMs}ms" : "off")} " +
                           $"size={(cfg.UseSize ? $"on≥{cfg.MinSizePct}%" : "off")} combine={(cfg.UseFps && cfg.UseSize ? cfg.Combine.ToUpperInvariant() : "n/a")} " +
-                          $"displayTime={displayMs}ms max={safetyMaxMs}ms blacklist={cfg.IgnoreExes?.Count ?? 0} exes");
+                          $"displayTime={displayMs}ms max={safetyMaxMs}ms blacklist={cfg.IgnoreExes?.Count ?? 0} exes+{cfg.IgnoreTitles?.Count ?? 0} titles");
     }
 
     public static void Stop() { _run = false; _thread = null; DetectedGameWindow = IntPtr.Zero; DetectedAtMs = null; }
@@ -109,6 +111,11 @@ internal static class SmartCapture
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var meters = new Dictionary<IntPtr, (WgcFps meter, int sustainedMs)>();
+        // One D3D11 device shared by every meter this run creates below (lazily — never created at all when
+        // useFps is off) instead of each meter making its own; several candidate windows appearing close
+        // together (a store launch, say) would otherwise stack up several live devices for no benefit. Disposed
+        // in the finally, after its meters.
+        IDirect3DDevice? sharedDevice = null;
         var announced = new HashSet<IntPtr>();   // log each window's skip/consider verdict once
         long lastPoll = 0;
         bool useFps = cfg.UseFps, useSize = cfg.UseSize;
@@ -151,7 +158,12 @@ internal static class SmartCapture
                             // Skip them so we detect the actual game window, not the store UI. The list
                             // is the editable global blacklist (Options → LiteBox-Options → Smart Capture).
                             if (cfg.IgnoreExes != null && cfg.IgnoreExes.Contains(w.Exe))
-                            { if (announced.Add(w.Hwnd)) Console.WriteLine($"[smartcapture]   skip[blacklist] {WinInfo(w)}"); continue; }
+                            { if (announced.Add(w.Hwnd)) Console.WriteLine($"[smartcapture]   skip[blacklist exe] {WinInfo(w)}"); continue; }
+                            // Same blacklist, its NON-exe/.bat lines: skip when the window TITLE contains one
+                            // (case-insensitive, wildcard) — e.g. a launcher splash titled "Preparing game...".
+                            if (cfg.IgnoreTitles is { Count: > 0 } && !string.IsNullOrEmpty(w.Title)
+                                && cfg.IgnoreTitles.Exists(t => WinScan.WildcardContains(t, w.Title)))
+                            { if (announced.Add(w.Hwnd)) Console.WriteLine($"[smartcapture]   skip[blacklist title] {WinInfo(w)}"); continue; }
 
                             // (1) TITLE — OR-priority: a title-matching window IS the game on its own.
                             if (titleSet && WinScan.WildcardMatch(cfg.Title, w.Title))
@@ -179,7 +191,8 @@ internal static class SmartCapture
                             {
                                 if (!meters.TryGetValue(w.Hwnd, out var m))
                                 {
-                                    var meter = WgcFps.TryCreate(w.Hwnd, cfg.ShowBorder);
+                                    sharedDevice ??= WgcFps.CreateSharedDevice();
+                                    var meter = WgcFps.TryCreate(w.Hwnd, cfg.ShowBorder, sharedDevice);
                                     if (meter == null)
                                     {
                                         if (announced.Add(w.Hwnd)) Console.WriteLine($"[smartcapture]   skip[no WGC capture] {WinInfo(w)}");
@@ -274,7 +287,11 @@ internal static class SmartCapture
             }
             if (metHwnd == IntPtr.Zero) return;
         }
-        finally { foreach (var kv in meters) { try { kv.Value.meter.Dispose(); } catch { } } }
+        finally
+        {
+            foreach (var kv in meters) { try { kv.Value.meter.Dispose(); } catch { } }
+            try { (sharedDevice as IDisposable)?.Dispose(); } catch { }   // release the shared device AFTER its meters
+        }
 
         // Stop-on-window-close: keep watching the game window; when it closes, force the process
         // tree to exit so the normal end-of-game flow (GAME OVER, cleanup) runs. Default off — the

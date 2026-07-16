@@ -64,16 +64,23 @@ internal static class StoreProcessWatcher
     public static void KillAllClients(StoreKind kind)
         => CloseOrKill(kind, ClientPids(kind, null), "all");
 
-    private static List<(string name, int pid)> ClientPids(StoreKind kind, HashSet<int>? exclude)
+    // Each target carries its StartTime alongside the PID: a bare PID is NOT a stable process identity to
+    // hold across the grace-wait — Windows can hand an exited client's PID to an unrelated process before we
+    // poll again, so we re-verify (pid + startTime) before ever treating one as alive or killing it.
+    private static List<(string name, int pid, DateTime start)> ClientPids(StoreKind kind, HashSet<int>? exclude)
     {
-        var list = new List<(string, int)>();
+        var list = new List<(string, int, DateTime)>();
         foreach (var name in ClientNames(kind))
             foreach (var p in Process.GetProcessesByName(name))
-            { try { if (exclude == null || !exclude.Contains(p.Id)) list.Add((name, p.Id)); } catch { } finally { try { p.Dispose(); } catch { } } }
+            { try { if (exclude == null || !exclude.Contains(p.Id)) list.Add((name, p.Id, SafeStart(p))); } catch { } finally { try { p.Dispose(); } catch { } } }
         return list;
     }
 
-    private static void CloseOrKill(StoreKind kind, List<(string name, int pid)> targets, string tag)
+    /// <summary>A process's StartTime, or DateTime.MinValue when it can't be read (exited/elevated). Same-user
+    /// store clients read fine, so MinValue only stands in for "unknown" — never a real client's identity.</summary>
+    private static DateTime SafeStart(Process p) { try { return p.StartTime; } catch { return DateTime.MinValue; } }
+
+    private static void CloseOrKill(StoreKind kind, List<(string name, int pid, DateTime start)> targets, string tag)
     {
         if (targets.Count == 0) return;
 
@@ -96,49 +103,52 @@ internal static class StoreProcessWatcher
             while (sw.ElapsedMilliseconds < GracefulWaitMs)
             {
                 bool anyAlive = false;
-                foreach (var t in targets) if (IsAlive(t.pid)) { anyAlive = true; break; }
+                foreach (var t in targets) if (IsAlive(t.pid, t.start)) { anyAlive = true; break; }
                 if (!anyAlive) break;
                 System.Threading.Thread.Sleep(200);
             }
             foreach (var t in targets)
             {
-                if (!IsAlive(t.pid)) { StoreTrace.Log($"store close: {t.name} pid={t.pid} exited cleanly ({tag})"); continue; }
-                try { using var p = Process.GetProcessById(t.pid); p.Kill(); StoreTrace.Log($"store close: {t.name} pid={t.pid} ignored close — killed ({tag})"); }
+                if (!IsAlive(t.pid, t.start)) { StoreTrace.Log($"store close: {t.name} pid={t.pid} exited cleanly ({tag})"); continue; }
+                try
+                {
+                    using var p = Process.GetProcessById(t.pid);
+                    // Re-check identity in the same instant we Kill: the PID could have been reused between the
+                    // IsAlive poll above and now. A matching PID alone is not enough — the StartTime must match too.
+                    if (SafeStart(p) != t.start) { StoreTrace.Log($"store close: {t.name} pid={t.pid} was reused by another process — not killing ({tag})"); continue; }
+                    p.Kill(); StoreTrace.Log($"store close: {t.name} pid={t.pid} ignored close — killed ({tag})");
+                }
                 catch (Exception ex) { StoreTrace.Log($"store close: kill {t.name} pid={t.pid} failed: {ex.Message}"); }
             }
         }) { IsBackground = true, Name = "litebox-store-close" }.Start();
     }
 
-    private static bool IsAlive(int pid)
-    { try { using var p = Process.GetProcessById(pid); return !p.HasExited; } catch { return false; } }
+    // A bare PID is not a safe identity once a grace period has elapsed: Windows can reassign an exited
+    // process's PID to an unrelated new one. StartTime (unique per real process lifetime) re-verifies we're
+    // still looking at the SAME process before treating it as alive/killable.
+    private static bool IsAlive(int pid, DateTime start)
+    { try { using var p = Process.GetProcessById(pid); return !p.HasExited && SafeStart(p) == start; } catch { return false; } }
 
     /// <summary>PostMessage WM_CLOSE to every visible top-level window owned by <paramref name="pid"/> — the
     /// same as clicking the X. Clean-exiting clients quit; tray-minimisers stay up and get killed as the
     /// fallback. Async: the app handles it on its own thread while we poll for the real exit.</summary>
     private static void PostCloseToWindows(int pid, string name)
     {
+        // WinScan.AllTopLevelWindows() already does the EnumWindows/IsWindowVisible/GetWindowThreadProcessId
+        // pass (shared with WindowHider and the RenderProbe diagnostic) — no third copy of that trio + loop here.
         int posted = 0;
         try
         {
-            EnumWindows((h, _) =>
+            foreach (var w in Diag.WinScan.AllTopLevelWindows())
             {
-                try
-                {
-                    GetWindowThreadProcessId(h, out uint wpid);
-                    if (wpid == (uint)pid && IsWindowVisible(h)) { PostMessage(h, WM_CLOSE, IntPtr.Zero, IntPtr.Zero); posted++; }
-                }
+                try { if (w.Pid == (uint)pid) { PostMessage(w.Hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero); posted++; } }
                 catch { }
-                return true;
-            }, IntPtr.Zero);
+            }
         }
         catch { }
         if (posted > 0) StoreTrace.Log($"store close: WM_CLOSE → {name} pid={pid} ({posted} window(s))");
     }
 
-    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-    [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc cb, IntPtr lParam);
-    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
-    [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
     private const uint WM_CLOSE = 0x0010;
 

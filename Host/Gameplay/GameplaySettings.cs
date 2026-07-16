@@ -281,15 +281,16 @@ internal static class GameplaySettings
         {
             Enabled           = B("SmartCaptureEnabled", true),
             UseFps            = B("SmartCaptureUseFps",  true),
-            UseSize           = B("SmartCaptureUseSize", false),
+            UseSize           = B("SmartCaptureUseSize", true),
             Combine           = R("SmartCaptureCombine", "and"),
-            MinFps            = I("SmartCaptureMinFps", 10),
+            MinFps            = I("SmartCaptureMinFps", 25),
             SustainMs         = I("SmartCaptureSustainMs", 600),
             MinSizePct        = I("SmartCaptureMinSizePct", 50),
             Title             = R("SmartCaptureTitle", ""),
             ShowBorder        = B("SmartCaptureShowBorder", false),   // hidden ini opt-in: keep the yellow WGC border
             StopOnWindowClose = B("SmartCaptureStopOnWindowClose", false),
-            IgnoreExes        = SmartCaptureIgnoredExes(),   // global blacklist (store clients by default)
+            IgnoreExes        = SmartCaptureIgnoredExes(),     // process-name entries (.exe/.bat) — store clients by default
+            IgnoreTitles      = SmartCaptureIgnoredTitles(),   // window-title fragments (every other blacklist line)
         };
     }
 
@@ -306,15 +307,37 @@ internal static class GameplaySettings
         catch { return SmartCaptureIgnoreDefaultRaw(); }
     }
 
-    /// <summary>The effective blacklist as a case-insensitive set of exe filenames. SmartCapture skips
-    /// any window whose owning process's exe is in here — so the store client's own UI isn't taken for
-    /// the game. Falls back to the built-in default when the config is empty.</summary>
+    // Blacklist entries split by TYPE: a line ending in .exe or .bat is a PROCESS name (matched against a
+    // window's owning-process exe); anything else is a window-TITLE fragment (case-insensitive "contains").
+    private static bool IsExeOrBatEntry(string e)
+        => e.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) || e.EndsWith(".bat", StringComparison.OrdinalIgnoreCase);
+
+    // One trimmed, non-empty entry per line. Split on NEWLINES only (not ',' / ';') so a title fragment may
+    // itself contain commas or semicolons.
+    private static IEnumerable<string> SmartCaptureIgnoreEntries()
+    {
+        foreach (var line in SmartCaptureIgnoreExesRaw().Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries))
+        { var e = line.Trim(); if (e.Length > 0) yield return e; }
+    }
+
+    /// <summary>The blacklist's PROCESS-name entries (lines ending in .exe/.bat), case-insensitive. SmartCapture
+    /// skips any window whose owning process's exe is in here — so the store client's own UI isn't taken for the
+    /// game. (Empty-config → store-client default is handled by <see cref="SmartCaptureIgnoreExesRaw"/>.)</summary>
     public static HashSet<string> SmartCaptureIgnoredExes()
     {
         var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var line in SmartCaptureIgnoreExesRaw().Split(new[] { '\n', '\r', ',', ';' }, StringSplitOptions.RemoveEmptyEntries))
-        { var e = line.Trim(); if (e.Length > 0) set.Add(e); }
-        return set.Count > 0 ? set : Diag.WinScan.StoreClientExes;
+        foreach (var e in SmartCaptureIgnoreEntries()) if (IsExeOrBatEntry(e)) set.Add(e);
+        return set;
+    }
+
+    /// <summary>The blacklist's window-TITLE fragments (every line NOT ending in .exe/.bat). SmartCapture skips
+    /// a window when its title CONTAINS one (case-insensitive, wildcards * and ?; "fenetre" matches "ma fenetre
+    /// de jeu" like "ma*jeu" does — see <see cref="Diag.WinScan.WildcardContains"/>). Empty by default.</summary>
+    public static List<string> SmartCaptureIgnoredTitles()
+    {
+        var list = new List<string>();
+        foreach (var e in SmartCaptureIgnoreEntries()) if (!IsExeOrBatEntry(e)) list.Add(e);
+        return list;
     }
 
     /// <summary>LiteBox-own: on an explicit exit (pause-menu "Exit Game"), show the end/exit screen
@@ -345,6 +368,60 @@ internal static class GameplaySettings
     {
         try { var v = LiteBoxConfig.LoadForExe().Get("ExitScreenEagerMs"); return int.TryParse(v, out var n) ? n : -1; }
         catch { return -1; }
+    }
+
+    // ── Pause-menu "Exit Game" force-close fallback (no custom exit AHK script) ────────────
+    // When the emulator/game has NO user-authored ExitAutoHotkeyScript, LiteBox sends the default
+    // exit key ("Send {Escape}") and, if the game is still up after a grace period, force-kills it.
+    // This option makes BOTH the grace period AND what gets killed configurable, resolved
+    // game → emulator → global. Encoded as one string: "none" | "smartcapture:<sec>" | "process:<sec>".
+    //   • none         — never force-kill (leave the game to close itself, like a custom exit script would)
+    //   • smartcapture — kill the SmartCapture-detected game process tree (fallback: launched emulator/app)
+    //   • process      — kill the launched emulator/app process tree (the historical behaviour)
+    // Default ("smartcapture", 30). A per-emulator / per-game override (litebox-options.db) wins.
+
+    public const string PauseExitKillDefaultMode = "smartcapture";
+    public const int PauseExitKillDefaultSeconds = 30;
+    private const int PauseExitKillMaxSeconds = 600;
+
+    /// <summary>Parse a "PauseExitKill" value ("none" | "smartcapture:&lt;sec&gt;" | "process:&lt;sec&gt;").
+    /// Empty / unrecognised ⇒ the default ("smartcapture", 30). Seconds clamped to 0..600.</summary>
+    public static (string mode, int seconds) ParsePauseExitKill(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return (PauseExitKillDefaultMode, PauseExitKillDefaultSeconds);
+        var s = raw.Trim();
+        if (string.Equals(s, "none", StringComparison.OrdinalIgnoreCase)) return ("none", PauseExitKillDefaultSeconds);
+        var parts = s.Split(':');
+        string mode = parts[0].Trim().ToLowerInvariant();
+        if (mode != "smartcapture" && mode != "process") return (PauseExitKillDefaultMode, PauseExitKillDefaultSeconds);
+        int sec = parts.Length > 1 && int.TryParse(parts[1].Trim(), out var n)
+            ? Math.Max(0, Math.Min(PauseExitKillMaxSeconds, n)) : PauseExitKillDefaultSeconds;
+        return (mode, sec);
+    }
+
+    /// <summary>Global pause-exit force-kill default (LiteBox.ini PauseExitKill). Default ("smartcapture", 30).</summary>
+    public static (string mode, int seconds) PauseExitKillGlobal()
+    {
+        try { return ParsePauseExitKill(LiteBoxConfig.LoadForExe().Get("PauseExitKill")); }
+        catch { return (PauseExitKillDefaultMode, PauseExitKillDefaultSeconds); }
+    }
+
+    /// <summary>Pause-exit force-kill behaviour resolved game → emulator → global (litebox-options.db over
+    /// LiteBox.ini), like <see cref="ResolvePauseScreenFreezeTiming"/>. Consumed by PauseManager's exit path.</summary>
+    public static (string mode, int seconds) ResolvePauseExitKill(string? emuId, string? gameId)
+    {
+        try
+        {
+            var ini = LiteBoxConfig.LoadForExe();
+            string? R(string key)
+            {
+                if (!string.IsNullOrEmpty(gameId)) { var g = Data.LiteBoxOption.GetOverride(Data.LiteBoxOption.ScopeGame, gameId!, key); if (!string.IsNullOrEmpty(g)) return g; }
+                if (!string.IsNullOrEmpty(emuId)) { var e = Data.LiteBoxOption.GetOverride(Data.LiteBoxOption.ScopeEmulator, emuId!, key); if (!string.IsNullOrEmpty(e)) return e; }
+                return ini.Get(key);
+            }
+            return ParsePauseExitKill(R("PauseExitKill"));
+        }
+        catch { return (PauseExitKillDefaultMode, PauseExitKillDefaultSeconds); }
     }
 
     /// <summary>When the web frontend (ExtendDB kiosk) comes back after a game, relative to the GAME

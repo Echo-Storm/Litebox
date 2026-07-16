@@ -280,7 +280,7 @@ internal static class LbGlobalOptions
             bool ignoreEdited = false;
             var ignBtn = new Button { Text = "Ignored windows…", Location = new Point(S(310), S(105)), AutoSize = true, FlatStyle = FlatStyle.Flat, BackColor = Panel2, ForeColor = Fg, Enabled = !readOnly, Padding = new Padding(S(6), S(1), S(6), S(1)) };
             ignBtn.FlatAppearance.BorderColor = LbxAccent;
-            var ignTip = new ToolTip(); ignTip.SetToolTip(ignBtn, "Exe filenames whose windows are NOT the game (store launchers — Steam / Epic / GOG / …). SmartCapture skips them.");
+            var ignTip = new ToolTip(); ignTip.SetToolTip(ignBtn, "Windows that are NOT the game. A line ending in .exe/.bat = a process to skip (store launchers — Steam / Epic / GOG / …); any other line = a window-title fragment (matched \"contains\", wildcard). SmartCapture skips matching windows.");
             ignBtn.Click += (_, _) => { var v = EditIgnoreListModal(ignoreList, readOnly, dpiS); if (v != null) { ignoreList = v; ignoreEdited = true; } };
             p.Controls.Add(ignBtn);
             applies.Add(() =>
@@ -298,12 +298,12 @@ internal static class LbGlobalOptions
             // fps test:  [x] Renders at ≥ [fps] fps for [sus] ms
             var scUseFps = Chk("Renders at ≥", ini.GetBool("SmartCaptureUseFps", true), new Point(S(12), S(206)));
             p.Controls.Add(scUseFps);
-            var scFps = Txt(ini.Get("SmartCaptureMinFps", "10"), new Point(S(140), S(204)), 50); p.Controls.Add(scFps);
+            var scFps = Txt(ini.Get("SmartCaptureMinFps", "25"), new Point(S(140), S(204)), 50); p.Controls.Add(scFps);
             p.Controls.Add(Lbl("fps for", new Point(S(196), S(207))));
             var scSus = Txt(ini.Get("SmartCaptureSustainMs", "600"), new Point(S(248), S(204)), 50); p.Controls.Add(scSus);
             p.Controls.Add(Lbl("ms", new Point(S(304), S(207))));
             // size test:  [x] Window covers ≥ [sz] % of the screen
-            var scUseSize = Chk("Window covers ≥", ini.GetBool("SmartCaptureUseSize", false), new Point(S(12), S(232)));
+            var scUseSize = Chk("Window covers ≥", ini.GetBool("SmartCaptureUseSize", true), new Point(S(12), S(232)));
             p.Controls.Add(scUseSize);
             var scSz = Txt(ini.Get("SmartCaptureMinSizePct", "50"), new Point(S(160), S(230)), 50); p.Controls.Add(scSz);
             p.Controls.Add(Lbl("% of the screen", new Point(S(218), S(233))));
@@ -327,7 +327,7 @@ internal static class LbGlobalOptions
 
             BindIniChk(scEn, "SmartCaptureEnabled", true);
             BindIniChk(scUseFps, "SmartCaptureUseFps", true);
-            BindIniChk(scUseSize, "SmartCaptureUseSize", false);
+            BindIniChk(scUseSize, "SmartCaptureUseSize", true);
             BindIniTxt(scFps, "SmartCaptureMinFps"); BindIniTxt(scSus, "SmartCaptureSustainMs");
             BindIniTxt(scSz, "SmartCaptureMinSizePct"); BindIniTxt(scTitle, "SmartCaptureTitle");
             BindIniChk(scStop, "SmartCaptureStopOnWindowClose");
@@ -416,8 +416,32 @@ internal static class LbGlobalOptions
             BindIniChk(frzTree, "PauseFreezeTree", false);
             applies.Add(() => { var v = tgtCbo.SelectedIndex == 1 ? "process" : "smartcapture"; if (v != ini.Get("PauseTarget", "smartcapture")) { ini.Set("PauseTarget", v); iniDirty = true; } });
 
+            // On pause-exit fallback (only used when there is NO custom AHK exit script): what to force-kill
+            // and after how many grace seconds. A per-emulator / per-game override still wins over this global.
+            int exkY = tgY + 88;
+            p.Controls.Add(new Label { Text = "On pause-exit if there is no AHK script:", Location = new Point(S(12), S(exkY)), AutoSize = true, ForeColor = LbxAccent, BackColor = Bg, Font = new Font("Segoe UI", 8.5f, FontStyle.Bold) });
+            var exkItems = new[] { "Do nothing (leave the game to close itself)", "Kill the SmartCapture-detected game (fallback: emulator/app)", "Kill the emulator / app process" };
+            var (exkModeCur, exkSecCur) = Gameplay.GameplaySettings.PauseExitKillGlobal();
+            string exkSel = exkModeCur == "none" ? exkItems[0] : exkModeCur == "process" ? exkItems[2] : exkItems[1];
+            var exkCbo = Cbo(exkItems, exkSel, new Point(S(12), S(exkY + 24)), 430); p.Controls.Add(exkCbo);
+            p.Controls.Add(Lbl("after", new Point(S(452), S(exkY + 27))));
+            var exkSec = Txt(exkSecCur.ToString(), new Point(S(492), S(exkY + 24)), 48); p.Controls.Add(exkSec);
+            p.Controls.Add(Lbl("sec", new Point(S(546), S(exkY + 27))));
+            p.Controls.Add(Lbl("Give the graceful exit key that long, then force-kill (or not). A per-emulator / per-game override still wins.", new Point(S(30), S(exkY + 52)), Dim));
+            void ExkSyncEnable() => exkSec.Enabled = !readOnly && exkCbo.SelectedIndex != 0;
+            exkCbo.SelectedIndexChanged += (_, _) => ExkSyncEnable();
+            ExkSyncEnable();
+            applies.Add(() =>
+            {
+                string mode = exkCbo.SelectedIndex == 0 ? "none" : exkCbo.SelectedIndex == 2 ? "process" : "smartcapture";
+                int sec = int.TryParse(exkSec.Text, out var sv) ? Math.Max(0, Math.Min(600, sv)) : Gameplay.GameplaySettings.PauseExitKillDefaultSeconds;
+                string v = mode == "none" ? "none" : mode + ":" + sec.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                string cur = ini.Get("PauseExitKill", Gameplay.GameplaySettings.PauseExitKillDefaultMode + ":" + Gameplay.GameplaySettings.PauseExitKillDefaultSeconds) ?? "";
+                if (v != cur) { ini.Set("PauseExitKill", v); iniDirty = true; }
+            });
+
             // Non-emulator pause defaults (store / direct-exe / DOSBox have no emulator to source them from).
-            int neY = tgY + 92;
+            int neY = exkY + 84;
             p.Controls.Add(Head("Non-emulator games (Store / direct .exe / DOSBox)", neY));
             var neUse = Chk("Use the pause screen", ini.GetBool("NonEmuUsePauseScreen", true), new Point(S(12), S(neY + 26)));
             var neSusp = Chk("Suspend (freeze) the process on pause", ini.GetBool("NonEmuSuspendOnPause", true), new Point(S(12), S(neY + 52)));
@@ -459,9 +483,10 @@ internal static class LbGlobalOptions
         return host;
     }
 
-    // ── SmartCapture "ignored windows" blacklist editor (store launchers) ────────
-    // A simple modal: one exe filename per line + Reset-to-defaults. Returns the normalised list
-    // (trimmed lines, empties dropped, newline-joined) on OK, or null on Cancel.
+    // ── SmartCapture "ignored windows" blacklist editor (store launchers + title fragments) ────────
+    // A simple modal: one entry per line + Reset-to-defaults. A line ending in .exe/.bat = a process name;
+    // anything else = a window-title fragment. Returns the normalised list (trimmed, empties dropped,
+    // newline-joined) on OK, or null on Cancel.
     private static string? EditIgnoreListModal(string current, bool readOnly, float dpiS)
     {
         int S(int px) => (int)Math.Round(px * dpiS);
@@ -470,15 +495,22 @@ internal static class LbGlobalOptions
         {
             Text = "Ignored windows — game-window detection", StartPosition = FormStartPosition.CenterParent,
             FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false,
-            BackColor = Bg, ForeColor = Fg, ClientSize = new Size(S(470), S(430)), ShowInTaskbar = false,
+            BackColor = Bg, ForeColor = Fg, ClientSize = new Size(S(480), S(468)), ShowInTaskbar = false,
         };
-        var lbl = new Label { Text = "One executable filename per line (e.g. steam.exe). SmartCapture ignores windows\nowned by these processes (store launchers) so it detects the game, not the store UI.", Location = new Point(S(12), S(10)), AutoSize = true, ForeColor = Dim, BackColor = Bg };
-        var tb = new TextBox { Location = new Point(S(12), S(50)), Size = new Size(S(446), S(310)), Multiline = true, ScrollBars = ScrollBars.Vertical, WordWrap = false, BackColor = Panel2, ForeColor = Fg, BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 9.5f), Text = current.Replace("\n", "\r\n"), ReadOnly = readOnly };
-        var reset = new Button { Text = "Reset to defaults", Location = new Point(S(12), S(370)), AutoSize = true, FlatStyle = FlatStyle.Flat, BackColor = Panel2, ForeColor = Fg, Enabled = !readOnly };
+        var lbl = new Label
+        {
+            Text = "One entry per line. Ending in .exe or .bat → a process filename (e.g. steam.exe): its windows are skipped.\n"
+                 + "Anything else → a window-TITLE fragment: a window is skipped when its title CONTAINS it (case-insensitive,\n"
+                 + "wildcards * and ? — \"fenetre\" matches \"my fenetre de jeu\" like \"my*jeu\").\n"
+                 + "Store launchers are the default so the game, not the store UI, is detected.",
+            Location = new Point(S(12), S(10)), AutoSize = true, ForeColor = Dim, BackColor = Bg,
+        };
+        var tb = new TextBox { Location = new Point(S(12), S(84)), Size = new Size(S(456), S(286)), Multiline = true, ScrollBars = ScrollBars.Vertical, WordWrap = false, BackColor = Panel2, ForeColor = Fg, BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 9.5f), Text = current.Replace("\n", "\r\n"), ReadOnly = readOnly };
+        var reset = new Button { Text = "Reset to defaults", Location = new Point(S(12), S(380)), AutoSize = true, FlatStyle = FlatStyle.Flat, BackColor = Panel2, ForeColor = Fg, Enabled = !readOnly };
         reset.FlatAppearance.BorderColor = Color.FromArgb(96, 156, 224);
         reset.Click += (_, _) => tb.Text = Gameplay.GameplaySettings.SmartCaptureIgnoreDefaultRaw().Replace("\n", "\r\n");
-        var ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Location = new Point(S(300), S(396)), Width = S(70), FlatStyle = FlatStyle.Flat, BackColor = LiteBoxTheme.Ok, ForeColor = Color.White, Enabled = !readOnly };
-        var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Location = new Point(S(378), S(396)), Width = S(80), FlatStyle = FlatStyle.Flat, BackColor = LiteBoxTheme.CancelBtn, ForeColor = Fg };
+        var ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Location = new Point(S(312), S(432)), Width = S(70), FlatStyle = FlatStyle.Flat, BackColor = LiteBoxTheme.Ok, ForeColor = Color.White, Enabled = !readOnly };
+        var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Location = new Point(S(390), S(432)), Width = S(80), FlatStyle = FlatStyle.Flat, BackColor = LiteBoxTheme.CancelBtn, ForeColor = Fg };
         f.Controls.AddRange(new Control[] { lbl, tb, reset, ok, cancel });
         f.AcceptButton = ok; f.CancelButton = cancel;
         if (f.ShowDialog() != DialogResult.OK) return null;
